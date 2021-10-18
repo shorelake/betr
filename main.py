@@ -22,6 +22,8 @@ import datasets
 import util.misc as utils
 import datasets.samplers as samplers
 from datasets import build_dataset, get_coco_api_from_dataset
+from datasets.torchvision_datasets.voc import VOCDetection
+from datasets.coco import make_coco_transforms
 from engine import evaluate, train_one_epoch
 from models import build_model
 
@@ -106,8 +108,12 @@ def get_args_parser():
     parser.add_argument('--focal_alpha', default=0.25, type=float)
 
     # dataset parameters
-    parser.add_argument('--dataset_file', default='coco')
+    parser.add_argument('--dataset', default='coco',
+                        help="coco or voc")
+    parser.add_argument('--dataset_file', default='coco',
+                        help="coco or voc")
     parser.add_argument('--coco_path', default='./data/coco', type=str)
+    parser.add_argument('--voc_path', default='./data/VOCdevkit', type=str)
     parser.add_argument('--coco_panoptic_path', type=str)
     parser.add_argument('--remove_difficult', action='store_true')
 
@@ -117,6 +123,7 @@ def get_args_parser():
                         help='device to use for training / testing')
     parser.add_argument('--seed', default=42, type=int)
     parser.add_argument('--resume', default='', help='resume from checkpoint')
+    parser.add_argument('--eval_every', default=1, type=int)
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
     parser.add_argument('--eval', action='store_true')
@@ -149,8 +156,9 @@ def main(args):
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)
 
-    dataset_train = build_dataset(image_set='train', args=args)
-    dataset_val = build_dataset(image_set='val', args=args)
+    dataset_train, dataset_val = get_datasets(args)
+    # dataset_train = build_dataset(image_set='train', args=args)
+    # dataset_val = build_dataset(image_set='val', args=args)
 
     if args.distributed:
         if args.cache_mode:
@@ -217,8 +225,10 @@ def main(args):
         # We also evaluate AP during panoptic training, on original coco DS
         coco_val = datasets.coco.build("val", args)
         base_ds = get_coco_api_from_dataset(coco_val)
-    else:
+    elif args.dataset_file == "coco":
         base_ds = get_coco_api_from_dataset(dataset_val)
+    else:
+        base_ds = dataset_val
 
     if args.frozen_weights is not None:
         checkpoint = torch.load(args.frozen_weights, map_location='cpu')
@@ -289,9 +299,12 @@ def main(args):
                     'args': args,
                 }, checkpoint_path)
 
-        test_stats, coco_evaluator = evaluate(
-            model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir
-        )
+        if args.dataset in ['coco', 'voc'] and epoch % args.eval_every == 0:
+            test_stats, coco_evaluator = evaluate(
+                model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir
+            )
+        else:
+            test_stats = {}
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                      **{f'test_{k}': v for k, v in test_stats.items()},
@@ -317,6 +330,22 @@ def main(args):
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
 
+
+
+def get_datasets(args):
+    if args.dataset == 'coco':
+        dataset_train = build_dataset(image_set='train', args=args)
+        dataset_val = build_dataset(image_set='val', args=args)
+    elif args.dataset == 'voc':
+        # dataset_train = VOCDetection(args.voc_path, ["2007", "2012"], image_sets=['trainval', 'trainval'],
+        #                              transforms=make_coco_transforms('train'))
+        dataset_train = VOCDetection(args.voc_path, ["2007"], image_sets=['trainval'],
+                                     transforms=make_coco_transforms('train'))
+        dataset_val = VOCDetection(args.voc_path, ["2007"], image_sets=['test'], transforms=make_coco_transforms('val'))
+    else:
+        raise ValueError("Wrong dataset name")
+
+    return dataset_train, dataset_val
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('Deformable DETR training and evaluation script', parents=[get_args_parser()])
