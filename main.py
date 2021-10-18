@@ -337,10 +337,10 @@ def get_datasets(args):
         dataset_train = build_dataset(image_set='train', args=args)
         dataset_val = build_dataset(image_set='val', args=args)
     elif args.dataset == 'voc':
-        # dataset_train = VOCDetection(args.voc_path, ["2007", "2012"], image_sets=['trainval', 'trainval'],
-        #                              transforms=make_coco_transforms('train'))
-        dataset_train = VOCDetection(args.voc_path, ["2007"], image_sets=['trainval'],
+        dataset_train = VOCDetection(args.voc_path, ["2007", "2012"], image_sets=['trainval', 'trainval'],
                                      transforms=make_coco_transforms('train'))
+        # dataset_train = VOCDetection(args.voc_path, ["2007"], image_sets=['trainval'],
+        #                              transforms=make_coco_transforms('train'))
         dataset_val = VOCDetection(args.voc_path, ["2007"], image_sets=['test'], transforms=make_coco_transforms('val'))
     else:
         raise ValueError("Wrong dataset name")
