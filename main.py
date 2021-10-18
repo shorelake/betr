@@ -114,6 +114,8 @@ def get_args_parser():
                         help="coco or voc")
     parser.add_argument('--coco_path', default='./data/coco', type=str)
     parser.add_argument('--voc_path', default='./data/VOCdevkit', type=str)
+    parser.add_argument('--voc_trainsplit', default='0712', type=str,
+                        help='07,12,0712')
     parser.add_argument('--coco_panoptic_path', type=str)
     parser.add_argument('--remove_difficult', action='store_true')
 
@@ -337,10 +339,15 @@ def get_datasets(args):
         dataset_train = build_dataset(image_set='train', args=args)
         dataset_val = build_dataset(image_set='val', args=args)
     elif args.dataset == 'voc':
-        dataset_train = VOCDetection(args.voc_path, ["2007", "2012"], image_sets=['trainval', 'trainval'],
-                                     transforms=make_coco_transforms('train'))
-        # dataset_train = VOCDetection(args.voc_path, ["2007"], image_sets=['trainval'],
-        #                              transforms=make_coco_transforms('train'))
+        if args.voc_trainsplit == '07':
+            dataset_train = VOCDetection(args.voc_path, ["2007"], image_sets=['trainval'],
+                                        transforms=make_coco_transforms('train'))
+        elif args.voc_trainsplit == '12':
+            dataset_train = VOCDetection(args.voc_path, ["2012"], image_sets=['trainval'],
+                                        transforms=make_coco_transforms('train'))
+        elif args.voc_trainsplit == '0712':  
+            dataset_train = VOCDetection(args.voc_path, ["2007", "2012"], image_sets=['trainval', 'trainval'],
+                                        transforms=make_coco_transforms('train'))
         dataset_val = VOCDetection(args.voc_path, ["2007"], image_sets=['test'], transforms=make_coco_transforms('val'))
     else:
         raise ValueError("Wrong dataset name")
