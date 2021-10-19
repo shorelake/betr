@@ -54,7 +54,13 @@ def get_args_parser():
     parser.add_argument('--frozen_weights', type=str, default=None,
                         help="Path to the pretrained model. If set, only the mask head will be trained")
 
-    # * Backbone
+    # * vit Backbone
+    parser.add_argument('--vit_backbone', default=None, type=str,
+                        help="Name of the vit backbone to use, now only support swin family") #TODO
+    parser.add_argument('--pretrained_path', default=None, type=str,
+                        help="the pretrained path to load pretrained weight") #TODO
+
+    # * CNN Backbone
     parser.add_argument('--backbone', default='resnet50', type=str,
                         help="Name of the convolutional backbone to use")
     parser.add_argument('--dilation', action='store_true',
@@ -151,7 +157,8 @@ def main(args):
     np.random.seed(seed)
     random.seed(seed)
 
-    model, criterion, postprocessors = build_model(args)
+    model, criterion, postprocessors = get_model(args)
+    # model, criterion, postprocessors = build_model(args)
     model.to(device)
 
     model_without_ddp = model
@@ -332,7 +339,13 @@ def main(args):
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
 
-
+def get_model(args):
+    if args.vit_backbone is not None:
+        from dev_models import build_model as build_tnf_model
+        model, criterion, postprocessors = build_tnf_model(args)
+    else:
+        model, criterion, postprocessors = build_model(args)
+    return model, criterion, postprocessors
 
 def get_datasets(args):
     if args.dataset == 'coco':
