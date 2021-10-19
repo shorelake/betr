@@ -51,6 +51,9 @@ class DeformableDETR(nn.Module):
         self.num_queries = num_queries
         self.transformer = transformer
         hidden_dim = transformer.d_model
+        # Defdetr use sigmoid+bce, rather than softmax+ce, so, class_embed
+        # here is not the same as detr, refers to:
+        # https://github.com/fundamentalvision/Deformable-DETR/issues/72#issuecomment-886408142
         self.class_embed = nn.Linear(hidden_dim, num_classes)
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
         self.num_feature_levels = num_feature_levels
