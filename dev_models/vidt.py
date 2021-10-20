@@ -83,11 +83,10 @@ class vidt(nn.Module):
                     nn.GroupNorm(32, hidden_dim),
                 )])
 
-        self.det_tokens_proj = nn.ModuleList([
-                nn.Sequential(
+        self.det_tokens_proj = nn.Sequential(
                     nn.Linear(backbone.num_channels[-1], hidden_dim),
                     nn.LayerNorm(hidden_dim),
-                )])
+                )
         
         self.backbone = backbone
         self.aux_loss = aux_loss
@@ -174,7 +173,8 @@ class vidt(nn.Module):
                 srcs.append(src)
                 masks.append(mask)
                 pos.append(pos_l)
-        det_tokens = self.det_tokens_proj[0](det_tokens)
+        # det_tokens = self.det_tokens_proj[0](det_tokens)
+        det_tokens = self.det_tokens_proj(det_tokens)
         query_embeds = None
         # if not self.two_stage:
         #     query_embeds = self.query_embed.weight
