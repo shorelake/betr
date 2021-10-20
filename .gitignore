@@ -13,3 +13,4 @@ build/
 data/
 exp/
 exps
+pretrained_model/
