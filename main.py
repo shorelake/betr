@@ -46,6 +46,8 @@ def get_args_parser():
 
     parser.add_argument('--sgd', action='store_true')
 
+    parser.add_argument('--detector', default='deformable_detr', type=str,
+                        help="support deformable_detr, vidt")
     # Variants of Deformable DETR
     parser.add_argument('--with_box_refine', default=False, action='store_true')
     parser.add_argument('--two_stage', default=False, action='store_true')

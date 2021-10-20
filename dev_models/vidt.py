@@ -20,20 +20,20 @@ from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
                        accuracy, get_world_size, interpolate,
                        is_dist_avail_and_initialized, inverse_sigmoid)
 
-from .backbone import build_backbone as build_swin_backbone
+from .backbone_ram import build_backbone as build_swin_backbone_with_ram
 from .matcher import build_matcher
 from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
 from .deformable_transformer import build_deforamble_transformer
 from .deformable_transformer_wo_encoder import build_deforamble_transformer_wo_encoder
 import copy
-
+from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
 
-class DeformableDETR(nn.Module):
+class vidt(nn.Module):
     """ This is the Deformable DETR module that performs object detection """
     def __init__(self, backbone, transformer, num_classes, num_queries, num_feature_levels,
                  aux_loss=True, with_box_refine=False, two_stage=False):
@@ -58,8 +58,8 @@ class DeformableDETR(nn.Module):
         self.class_embed = nn.Linear(hidden_dim, num_classes)
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
         self.num_feature_levels = num_feature_levels
-        if not two_stage:
-            self.query_embed = nn.Embedding(num_queries, hidden_dim*2)
+        # if not two_stage:
+        #     self.query_embed = nn.Embedding(num_queries, hidden_dim*2)
         if num_feature_levels > 1:
             num_backbone_outs = len(backbone.strides)
             input_proj_list = []
@@ -82,6 +82,13 @@ class DeformableDETR(nn.Module):
                     nn.Conv2d(backbone.num_channels[0], hidden_dim, kernel_size=1),
                     nn.GroupNorm(32, hidden_dim),
                 )])
+
+        self.det_tokens_proj = nn.ModuleList([
+                nn.Sequential(
+                    nn.Linear(backbone.num_channels[-1], hidden_dim),
+                    nn.LayerNorm(hidden_dim),
+                )])
+        
         self.backbone = backbone
         self.aux_loss = aux_loss
         self.with_box_refine = with_box_refine
@@ -114,6 +121,19 @@ class DeformableDETR(nn.Module):
             self.transformer.decoder.class_embed = self.class_embed
             for box_embed in self.bbox_embed:
                 nn.init.constant_(box_embed.layers[-1].bias.data[2:], 0.0)
+        
+        self._init_det_tokens_proj()
+
+    def _init_det_tokens_proj(self):
+        def _init_weights(m):
+            if isinstance(m, nn.Linear):
+                trunc_normal_(m.weight, std=.02)
+                if isinstance(m, nn.Linear) and m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.constant_(m.bias, 0)
+                nn.init.constant_(m.weight, 1.0)
+        self.det_tokens_proj.apply(_init_weights)
 
     def forward(self, samples: NestedTensor):
         """ The forward expects a NestedTensor, which consists of:
@@ -132,7 +152,7 @@ class DeformableDETR(nn.Module):
         """
         if not isinstance(samples, NestedTensor):
             samples = nested_tensor_from_tensor_list(samples)
-        features, pos = self.backbone(samples)
+        features, pos, det_tokens = self.backbone(samples)
 
         srcs = []
         masks = []
@@ -154,10 +174,11 @@ class DeformableDETR(nn.Module):
                 srcs.append(src)
                 masks.append(mask)
                 pos.append(pos_l)
-
+        det_tokens = self.det_tokens_proj[0](det_tokens)
         query_embeds = None
-        if not self.two_stage:
-            query_embeds = self.query_embed.weight
+        # if not self.two_stage:
+        #     query_embeds = self.query_embed.weight
+        query_embeds = det_tokens
         hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact = self.transformer(srcs, masks, pos, query_embeds)
 
         outputs_classes = []
@@ -454,15 +475,16 @@ def build(args):
         num_classes = 20
     num_classes += 1
     device = torch.device(args.device)
-    print("\n build swin backbone \n")
-    backbone = build_swin_backbone(args)
+    print("\n build swin backbone with ram \n")
+    backbone = build_swin_backbone_with_ram(args)
     if args.enc_layers == 0:
         print("\n build tranformer neck without encoder \n")
         transformer = build_deforamble_transformer_wo_encoder(args)
     else:
-        print("\n build tranformer neck without encoder \n")
-        transformer = build_deforamble_transformer(args)
-    model = DeformableDETR(
+        raise ValueError("vidt doesn't support neck encoder currently")
+        print("\n build tranformer neck wit encoder \n")
+        transformer = build_deforamble_transformer(args) # TODO, vidt now doesn't support encoder layer now
+    model = vidt(
         backbone,
         transformer,
         num_classes=num_classes,

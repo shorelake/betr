@@ -7,9 +7,15 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 # ------------------------------------------------------------------------
 
-from .deformable_detr import build
+from .deformable_detr import build as build_defdetr
+from .vidt import build as build_vidt
 
 
 def build_model(args):
-    return build(args)
+    if args.detector == 'vidt':
+        return build_vidt(args)
+    elif args.detector == 'deformable_detr':
+        return build_defdetr(args)
+    else:
+        raise ValueError("Wrong detector name")
 

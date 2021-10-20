@@ -20,7 +20,7 @@ import mmcv
 
 import math
 
-__all__ = ['swin_nano_w_ram', 'swin_tiny_w_ram', 'swin_small_w_ram', 'swin_base_w_ram']
+__all__ = ['swin_nano_ram', 'swin_tiny_ram', 'swin_small_ram', 'swin_base_ram']
 
 class PositionEmbeddingSine(nn.Module):
     """
@@ -745,7 +745,7 @@ class SwinTransformerWithRAM(nn.Module):
         self._freeze_stages()
 
 
-def swin_nano_w_ram(pretrained=False, pretrained_path=None, out_indices=(1, 2, 3), **kwargs):
+def swin_nano_ram(pretrained=False, pretrained_path=None, out_indices=(1, 2, 3), **kwargs):
     model = SwinTransformerWithRAM(embed_dim=48,
                             depths=[2, 2, 6, 2],
                             num_heads=[3, 6, 12, 24],
@@ -766,7 +766,7 @@ def swin_nano_w_ram(pretrained=False, pretrained_path=None, out_indices=(1, 2, 3
     return model
 
 
-def swin_tiny_w_ram(pretrained=False, pretrained_path=None, out_indices=(1, 2, 3), **kwargs):
+def swin_tiny_ram(pretrained=False, pretrained_path=None, out_indices=(1, 2, 3), **kwargs):
     model = SwinTransformerWithRAM(embed_dim=96,
                             depths=[2, 2, 6, 2],
                             num_heads=[3, 6, 12, 24],
@@ -786,7 +786,7 @@ def swin_tiny_w_ram(pretrained=False, pretrained_path=None, out_indices=(1, 2, 3
     model.init_weights(pretrained=pretrained_path)
     return model
 
-def swin_small_w_ram(pretrained=False, pretrained_path=None, out_indices=(1, 2, 3), **kwargs):
+def swin_small_ram(pretrained=False, pretrained_path=None, out_indices=(1, 2, 3), **kwargs):
     model = SwinTransformerWithRAM(embed_dim=96,
                             depths=[2, 2, 18, 2],
                             num_heads=[3, 6, 12, 24],
@@ -807,7 +807,7 @@ def swin_small_w_ram(pretrained=False, pretrained_path=None, out_indices=(1, 2, 
     return model
 
 
-def swin_base_w_ram(pretrained=False, pretrained_path=None, out_indices=(1, 2, 3), **kwargs):
+def swin_base_ram(pretrained=False, pretrained_path=None, out_indices=(1, 2, 3), **kwargs):
     model = SwinTransformerWithRAM(embed_dim=128,
                             depths=[2, 2, 18, 2],
                             num_heads=[4, 8, 16, 32],
@@ -832,7 +832,7 @@ if __name__ == '__main__':
     # import os.path
     # this_dir = os.path.dirname(__file__)
     # sys.path.insert(0, this_dir + '/..')
-    model = swin_tiny_w_ram(pretrained_path='/home/lbc/pretrained_model/swin_tiny_patch4_window7_224.pth')
+    model = swin_tiny_ram(pretrained_path='/home/lbc/pretrained_model/swin_tiny_patch4_window7_224.pth')
     import pdb;pdb.set_trace()
     inputs = torch.randn([1,3,320,320])
     model = model.cuda()
