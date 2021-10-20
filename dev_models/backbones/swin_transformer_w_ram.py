@@ -128,7 +128,7 @@ class WindowAttention(nn.Module):
     """
 
     def __init__(self, dim, window_size, num_heads, qkv_bias=True, qk_scale=None, attn_drop=0., proj_drop=0.,
-                 activate_cross_attn=False, det_token_num=100):
+                 activate_cross_attn=False, activate_self_attn=False, det_token_num=100):
 
         super().__init__()
         self.dim = dim
@@ -143,10 +143,10 @@ class WindowAttention(nn.Module):
 
         # define positional encoding for det tokens
         
-        if activate_cross_attn:
+        if activate_self_attn:
             self.position_embedding = PositionEmbeddingSine(dim // 2, normalize=True)
             self.det_pos_embed = nn.Parameter(torch.zeros(1, det_token_num, dim))
-        self.activate_cross_attn = activate_cross_attn
+        self.activate_self_attn = activate_self_attn
 
         # get pair-wise relative position index for each token inside the window
         coords_h = torch.arange(self.window_size[0])
@@ -203,7 +203,7 @@ class WindowAttention(nn.Module):
         x = self.proj(x)
         x = self.proj_drop(x)
 
-        if self.activate_cross_attn:
+        if self.activate_self_attn:
             # det tokens
             det_B, det_N, det_C= det_tokens.shape
             det_tokens = det_tokens + self.det_pos_embed
@@ -258,7 +258,7 @@ class SwinTransformerBlock(nn.Module):
 
     def __init__(self, dim, num_heads, window_size=7, shift_size=0,
                  mlp_ratio=4., qkv_bias=True, qk_scale=None, drop=0., attn_drop=0., drop_path=0.,
-                 act_layer=nn.GELU, norm_layer=nn.LayerNorm, activate_cross_attn=False,
+                 act_layer=nn.GELU, norm_layer=nn.LayerNorm, activate_cross_attn=False,activate_self_attn=False,
                  det_token_num=100):
         super().__init__()
         self.dim = dim
@@ -271,7 +271,8 @@ class SwinTransformerBlock(nn.Module):
         self.norm1 = norm_layer(dim)
         self.attn = WindowAttention(
             dim, window_size=to_2tuple(self.window_size), num_heads=num_heads,
-            qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop, activate_cross_attn=activate_cross_attn,
+            qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop, 
+            activate_cross_attn=activate_cross_attn, activate_self_attn=activate_self_attn,
             det_token_num=det_token_num)
 
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
@@ -282,6 +283,7 @@ class SwinTransformerBlock(nn.Module):
         self.H = None
         self.W = None
         self.activate_cross_attn = activate_cross_attn
+        self.activate_self_attn = activate_self_attn
 
     def forward(self, x, mask_matrix, det_tokens):
         """ Forward function.
@@ -300,10 +302,13 @@ class SwinTransformerBlock(nn.Module):
         x = self.norm1(x)
         
         x = x.view(B, H, W, C)
-        if self.activate_cross_attn:
-            patch_tokens = x.clone()
+        if self.activate_self_attn:
+            patch_tokens = None
             det_tokens = self.norm1(det_tokens)
             det_shortcut = det_tokens
+            if self.activate_cross_attn:
+                patch_tokens = x.clone()
+
         # pad feature maps to multiples of window size
         pad_l = pad_t = 0
         pad_r = (self.window_size - W % self.window_size) % self.window_size
@@ -324,10 +329,8 @@ class SwinTransformerBlock(nn.Module):
         x_windows = x_windows.view(-1, self.window_size * self.window_size, C)  # nW*B, window_size*window_size, C
 
         # W-MSA/SW-MSA
-        if self.activate_cross_attn:
-            attn_windows, det_tokens = self.attn(x_windows,det_tokens, mask=attn_mask, patch_tokens=patch_tokens)  # nW*B, window_size*window_size, C
-        else:
-            attn_windows, det_tokens = self.attn(x_windows,det_tokens, mask=attn_mask)  # nW*B, window_size*window_size, C
+        attn_windows, det_tokens = self.attn(x_windows,det_tokens, mask=attn_mask, patch_tokens=patch_tokens)  # nW*B, window_size*window_size, C
+
 
         # merge windows
         attn_windows = attn_windows.view(-1, self.window_size, self.window_size, C)
@@ -347,7 +350,7 @@ class SwinTransformerBlock(nn.Module):
         # FFN
         x = shortcut + self.drop_path(x)
         x = x + self.drop_path(self.mlp(self.norm2(x)))
-        if self.activate_cross_attn:
+        if self.activate_self_attn:
             det_tokens = det_shortcut + self.drop_path(det_tokens)
             det_tokens = det_tokens + self.drop_path(self.mlp(self.norm2(det_tokens)))
 
@@ -430,6 +433,7 @@ class BasicLayer(nn.Module):
                  downsample=None,
                  use_checkpoint=False,
                  activate_cross_attn=False,
+                 activate_self_attn=False,
                  det_token_num=100):
         super().__init__()
         self.window_size = window_size
@@ -452,6 +456,7 @@ class BasicLayer(nn.Module):
                 drop_path=drop_path[i] if isinstance(drop_path, list) else drop_path,
                 norm_layer=norm_layer,
                 activate_cross_attn=activate_cross_attn,
+                activate_self_attn=activate_self_attn,
                 det_token_num=det_token_num)
             for i in range(depth)])
 
@@ -598,7 +603,8 @@ class SwinTransformerWithRAM(nn.Module):
                  frozen_stages=-1,
                  use_checkpoint=False,
                  det_token_num=100,
-                 activate_cross_attns=[False,False,False,True]):
+                 activate_cross_attns=[False,False,False,True],
+                 activate_self_attns=[True,True,True,True]):
         super().__init__()
 
         self.pretrain_img_size = pretrain_img_size
@@ -608,7 +614,7 @@ class SwinTransformerWithRAM(nn.Module):
         self.patch_norm = patch_norm
         self.out_indices = out_indices
         self.frozen_stages = frozen_stages
-
+        self.activate_self_attns = activate_self_attns
         # split image into non-overlapping patches
         self.patch_embed = PatchEmbed(
             patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim,
@@ -647,6 +653,7 @@ class SwinTransformerWithRAM(nn.Module):
                 downsample=PatchMerging if (i_layer < self.num_layers - 1) else None,
                 use_checkpoint=use_checkpoint,
                 activate_cross_attn=activate_cross_attns[i_layer],
+                activate_self_attn=activate_self_attns[i_layer],
                 det_token_num=det_token_num)
             self.layers.append(layer)
             # if i_layer > 0:
@@ -664,13 +671,27 @@ class SwinTransformerWithRAM(nn.Module):
             self.add_module(layer_name, layer)
 
         self._freeze_stages()
-        self._apply_ram(det_token_num=det_token_num)
+        self._apply_ram(det_token_num=det_token_num, activate_self_attns=activate_self_attns)
         # self.init_weights()
 
-    def _apply_ram(self, det_token_num=100):
+    def _apply_ram(self, det_token_num=100, activate_self_attns=[True,True,True,True]):
         self.det_token_num = det_token_num
-        self.det_tokens = nn.Parameter(torch.zeros(1, det_token_num, self.embed_dim * 2 ** (self.num_layers-1)))
+        for index1, flag in enumerate(activate_self_attns):
+            if flag:
+                init_index = index1
+                break
+        self.det_tokens = nn.Parameter(torch.zeros(1, det_token_num, self.embed_dim * 2 ** init_index))
         self.det_tokens = trunc_normal_(self.det_tokens, std=.02)
+        for index2, flag in enumerate(activate_self_attns):
+            if flag and index2 != 0:
+                layer = nn.Sequential(
+                    nn.Linear(self.embed_dim * 2 ** (index2-1), self.embed_dim * 2 ** index2),
+                    nn.LayerNorm(self.embed_dim * 2 ** index2),
+                    )
+                # layer = nn.Linear(self.embed_dim * 2 ** (index2-1), self.embed_dim * 2 ** index2)
+                layer_name = f'det_linear{index2-1}'
+                self.add_module(layer_name, layer)
+
 
     def _freeze_stages(self):
         if self.frozen_stages >= 0:
@@ -731,6 +752,9 @@ class SwinTransformerWithRAM(nn.Module):
         for i in range(self.num_layers):
             layer = self.layers[i]
             x_out, H, W, x, Wh, Ww, det_tokens = layer(x, Wh, Ww, det_tokens=det_tokens)
+            if self.activate_self_attns[i] and i != self.num_layers-1:
+                det_linear = getattr(self, f'det_linear{i}')
+                det_tokens = det_linear(det_tokens)
             if i in self.out_indices:
                 norm_layer = getattr(self, f'norm{i}')
                 x_out = norm_layer(x_out)
@@ -761,7 +785,8 @@ def swin_nano_ram(pretrained=False, pretrained_path=None, out_indices=(1, 2, 3),
                             out_indices=out_indices,
                             use_checkpoint=False,
                             det_token_num=100,
-                            activate_cross_attns=[False,False,False,True])
+                            activate_cross_attns=[False,False,False,True],
+                            activate_self_attns=[True,True,True,True])
     model.init_weights(pretrained=pretrained_path)
     return model
 
@@ -782,7 +807,8 @@ def swin_tiny_ram(pretrained=False, pretrained_path=None, out_indices=(1, 2, 3),
                             out_indices=out_indices,
                             use_checkpoint=False,
                             det_token_num=100,
-                            activate_cross_attns=[False,False,False,True])
+                            activate_cross_attns=[False,False,False,True],
+                            activate_self_attns=[True,True,True,True])
     model.init_weights(pretrained=pretrained_path)
     return model
 
@@ -802,7 +828,8 @@ def swin_small_ram(pretrained=False, pretrained_path=None, out_indices=(1, 2, 3)
                             out_indices=out_indices,
                             use_checkpoint=False,
                             det_token_num=100,
-                            activate_cross_attns=[False,False,False,True])
+                            activate_cross_attns=[False,False,False,True],
+                            activate_self_attns=[True,True,True,True])
     model.init_weights(pretrained=pretrained_path)
     return model
 
@@ -823,7 +850,8 @@ def swin_base_ram(pretrained=False, pretrained_path=None, out_indices=(1, 2, 3),
                             out_indices=out_indices,
                             use_checkpoint=False,
                             det_token_num=100,
-                            activate_cross_attns=[False,False,False,True])
+                            activate_cross_attns=[False,False,False,True],
+                            activate_self_attns=[True,True,True,True])
     model.init_weights(pretrained=pretrained_path)
     return model
 
