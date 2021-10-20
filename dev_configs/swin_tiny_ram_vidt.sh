@@ -16,4 +16,5 @@ python -u main.py \
     --lr_scheduler cosinelr \
     --lr_backbone 2e-4 \
     --lr 2e-4 \
+    --pretrained_path ./pretrained_model/swin_tiny_patch4_window7_224.pth \
     ${PY_ARGS}
