@@ -455,8 +455,11 @@ def build(args):
     device = torch.device(args.device)
 
     backbone = build_backbone(args)
-
-    transformer = build_deforamble_transformer(args)
+    if args.enc_layers == 0:
+        print("\n build tranformer neck without encoder \n")
+        transformer = build_deforamble_transformer_wo_encoder(args)
+    else:
+        transformer = build_deforamble_transformer(args)
     model = DeformableDETR(
         backbone,
         transformer,

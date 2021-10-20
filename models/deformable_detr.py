@@ -25,6 +25,7 @@ from .matcher import build_matcher
 from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
 from .deformable_transformer import build_deforamble_transformer
+from .deformable_transformer_wo_encoder import build_deforamble_transformer_wo_encoder
 import copy
 
 
@@ -455,8 +456,11 @@ def build(args):
     device = torch.device(args.device)
 
     backbone = build_backbone(args)
-
-    transformer = build_deforamble_transformer(args)
+    if args.enc_layers == 0:
+        print("\n build tranformer neck without encoder \n")
+        transformer = build_deforamble_transformer_wo_encoder(args)
+    else:
+        transformer = build_deforamble_transformer(args)
     model = DeformableDETR(
         backbone,
         transformer,
