@@ -144,8 +144,9 @@ class WindowAttention(nn.Module):
         # define positional encoding for det tokens
         
         if activate_self_attn:
-            self.position_embedding = PositionEmbeddingSine(dim // 2, normalize=True)
             self.det_pos_embed = nn.Parameter(torch.zeros(1, det_token_num, dim))
+            if activate_cross_attn:
+                self.position_embedding = PositionEmbeddingSine(dim // 2, normalize=True)
         self.activate_self_attn = activate_self_attn
 
         # get pair-wise relative position index for each token inside the window
