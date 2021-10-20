@@ -25,6 +25,7 @@ from .matcher import build_matcher
 from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
 from .deformable_transformer import build_deforamble_transformer
+from .deformable_transformer_wo_encoder import build_deforamble_transformer_wo_encoder
 import copy
 
 
