@@ -8,8 +8,9 @@
 # ------------------------------------------------------------------------
 
 from .deformable_detr import build
-
+from loguru import logger
 
 def build_model(args):
+    logger.info("build resnet deformable detr")
     return build(args)
 

@@ -16,6 +16,7 @@ from torch import nn
 
 from util.misc import NestedTensor
 
+from loguru import logger
 
 class PositionEmbeddingSine(nn.Module):
     """
@@ -28,6 +29,7 @@ class PositionEmbeddingSine(nn.Module):
         self.temperature = temperature
         self.normalize = normalize
         if scale is not None and normalize is False:
+            logger.error("normalize should be True if scale is passed")
             raise ValueError("normalize should be True if scale is passed")
         if scale is None:
             scale = 2 * math.pi
@@ -92,6 +94,7 @@ def build_position_encoding(args):
     elif args.position_embedding in ('v3', 'learned'):
         position_embedding = PositionEmbeddingLearned(N_steps)
     else:
+        logger.error(f"not supported {args.position_embedding}")
         raise ValueError(f"not supported {args.position_embedding}")
 
     return position_embedding

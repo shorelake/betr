@@ -9,13 +9,16 @@
 
 from .deformable_detr import build as build_defdetr
 from .vidt import build as build_vidt
-
+from loguru import logger
 
 def build_model(args):
     if args.detector == 'vidt':
+        logger.info("build vit backbone vidt detector")
         return build_vidt(args)
     elif args.detector == 'deformable_detr':
+        logger.info("build vit backbone deformable detr detector")
         return build_defdetr(args)
     else:
+        logger.error("Wrong vit backbone detector name")
         raise ValueError("Wrong detector name")
 

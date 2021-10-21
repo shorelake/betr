@@ -28,6 +28,7 @@ from .deformable_transformer import build_deforamble_transformer
 from .deformable_transformer_wo_encoder import build_deforamble_transformer_wo_encoder
 import copy
 
+from loguru import logger
 
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
@@ -454,13 +455,13 @@ def build(args):
         num_classes = 20
     num_classes += 1
     device = torch.device(args.device)
-    print("\n build swin backbone \n")
+    logger.info("build swin backbone")
     backbone = build_swin_backbone(args)
     if args.enc_layers == 0:
-        print("\n build tranformer neck without encoder \n")
+        logger.info("build tranformer neck without encoder")
         transformer = build_deforamble_transformer_wo_encoder(args)
     else:
-        print("\n build tranformer neck without encoder \n")
+        logger.info("build tranformer neck with encoder")
         transformer = build_deforamble_transformer(args)
     model = DeformableDETR(
         backbone,

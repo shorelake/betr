@@ -11,6 +11,7 @@ from .mmcv_custom import load_checkpoint
 from mmdet.utils import get_root_logger
 import mmcv
 
+from loguru import logger
 __all__ = ['swin_nano', 'swin_tiny', 'swin_small', 'swin_base']
 
 class Mlp(nn.Module):
@@ -575,6 +576,7 @@ class SwinTransformer(nn.Module):
         elif pretrained is None:
             self.apply(_init_weights)
         else:
+            logger.error('pretrained must be a str or None')
             raise TypeError('pretrained must be a str or None')
 
     def forward(self, x):

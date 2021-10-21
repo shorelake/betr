@@ -22,6 +22,7 @@ from mmcv.parallel import is_module_wrapper
 from mmcv.utils import mkdir_or_exist
 from mmcv.runner import get_dist_info
 
+from loguru import logger
 ENV_MMCV_HOME = 'MMCV_HOME'
 ENV_XDG_CACHE_HOME = 'XDG_CACHE_HOME'
 DEFAULT_CACHE_DIR = '~/.cache'
@@ -38,7 +39,7 @@ def _get_mmcv_home():
     return mmcv_home
 
 
-def load_state_dict(module, state_dict, strict=False, logger=None):
+def load_state_dict(module, state_dict, strict=False):
     """Load state_dict to a module.
     This method is modified from :meth:`torch.nn.Module.load_state_dict`.
     Default value for ``strict`` is set to ``False`` and the message for
@@ -98,10 +99,8 @@ def load_state_dict(module, state_dict, strict=False, logger=None):
         err_msg = '\n'.join(err_msg)
         if strict:
             raise RuntimeError(err_msg)
-        elif logger is not None:
-            logger.warning(err_msg)
         else:
-            print(err_msg)
+            logger.warning(err_msg)
 
 
 def load_url_dist(url, model_dir=None):
@@ -282,8 +281,7 @@ def _load_checkpoint(filename, map_location=None):
 def load_checkpoint(model,
                     filename,
                     map_location='cpu',
-                    strict=False,
-                    logger=None):
+                    strict=False):
     """Load checkpoint from a file or URI.
     Args:
         model (Module): Module to load checkpoint.
@@ -346,7 +344,7 @@ def load_checkpoint(model,
                 state_dict[table_key] = table_pretrained_resized.view(nH2, L2).permute(1, 0)
 
     # load state_dict
-    load_state_dict(model, state_dict, strict, logger)
+    load_state_dict(model, state_dict, strict)
     return checkpoint
 
 

@@ -27,7 +27,7 @@ from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
 from .deformable_transformer import build_deforamble_transformer
 from .deformable_transformer_wo_encoder import build_deforamble_transformer_wo_encoder
 import copy
-
+from loguru import logger
 
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
@@ -457,7 +457,7 @@ def build(args):
 
     backbone = build_backbone(args)
     if args.enc_layers == 0:
-        print("\n build tranformer neck without encoder \n")
+        logger.info("build tranformer neck without encoder")
         transformer = build_deforamble_transformer_wo_encoder(args)
     else:
         transformer = build_deforamble_transformer(args)

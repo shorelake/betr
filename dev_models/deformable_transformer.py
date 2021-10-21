@@ -18,7 +18,7 @@ from torch.nn.init import xavier_uniform_, constant_, uniform_, normal_
 
 from util.misc import inverse_sigmoid
 from models.ops.modules import MSDeformAttn
-
+from loguru import logger
 
 class DeformableTransformer(nn.Module):
     def __init__(self, d_model=256, nhead=8,
@@ -378,6 +378,7 @@ def _get_activation_fn(activation):
         return F.gelu
     if activation == "glu":
         return F.glu
+    logger.error(F"activation should be relu/gelu, not {activation}.")
     raise RuntimeError(F"activation should be relu/gelu, not {activation}.")
 
 

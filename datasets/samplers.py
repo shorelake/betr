@@ -11,7 +11,7 @@ import math
 import torch
 import torch.distributed as dist
 from torch.utils.data.sampler import Sampler
-
+from loguru import logger
 
 class DistributedSampler(Sampler):
     """Sampler that restricts data loading to a subset of the dataset.
@@ -31,10 +31,12 @@ class DistributedSampler(Sampler):
     def __init__(self, dataset, num_replicas=None, rank=None, local_rank=None, local_size=None, shuffle=True):
         if num_replicas is None:
             if not dist.is_available():
+                logger.error("Requires distributed package to be available")
                 raise RuntimeError("Requires distributed package to be available")
             num_replicas = dist.get_world_size()
         if rank is None:
             if not dist.is_available():
+                logger.error("Requires distributed package to be available")
                 raise RuntimeError("Requires distributed package to be available")
             rank = dist.get_rank()
         self.dataset = dataset
@@ -90,10 +92,12 @@ class NodeDistributedSampler(Sampler):
     def __init__(self, dataset, num_replicas=None, rank=None, local_rank=None, local_size=None, shuffle=True):
         if num_replicas is None:
             if not dist.is_available():
+                logger.error("Requires distributed package to be available")
                 raise RuntimeError("Requires distributed package to be available")
             num_replicas = dist.get_world_size()
         if rank is None:
             if not dist.is_available():
+                logger.error("Requires distributed package to be available")
                 raise RuntimeError("Requires distributed package to be available")
             rank = dist.get_rank()
         if local_rank is None:

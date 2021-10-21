@@ -19,10 +19,11 @@ import torch.nn.functional as F
 from torch.nn.init import xavier_uniform_, constant_
 
 from ..functions import MSDeformAttnFunction
-
+from loguru import logger
 
 def _is_power_of_2(n):
     if (not isinstance(n, int)) or (n < 0):
+        logger.error("invalid input for _is_power_of_2: {} (type: {})".format(n, type(n)))
         raise ValueError("invalid input for _is_power_of_2: {} (type: {})".format(n, type(n)))
     return (n & (n-1) == 0) and n != 0
 
@@ -38,10 +39,13 @@ class MSDeformAttn(nn.Module):
         """
         super().__init__()
         if d_model % n_heads != 0:
+            logger.error('d_model must be divisible by n_heads, but got {} and {}'.format(d_model, n_heads))
             raise ValueError('d_model must be divisible by n_heads, but got {} and {}'.format(d_model, n_heads))
         _d_per_head = d_model // n_heads
         # you'd better set _d_per_head to a power of 2 which is more efficient in our CUDA implementation
         if not _is_power_of_2(_d_per_head):
+            logger.warning("You'd better set d_model in MSDeformAttn to make the dimension of each attention head a power of 2 "
+                          "which is more efficient in our CUDA implementation.")
             warnings.warn("You'd better set d_model in MSDeformAttn to make the dimension of each attention head a power of 2 "
                           "which is more efficient in our CUDA implementation.")
 
@@ -107,6 +111,8 @@ class MSDeformAttn(nn.Module):
             sampling_locations = reference_points[:, :, None, :, None, :2] \
                                  + sampling_offsets / self.n_points * reference_points[:, :, None, :, None, 2:] * 0.5
         else:
+            logger.error(
+                'Last dim of reference_points must be 2 or 4, but get {} instead.'.format(reference_points.shape[-1]))
             raise ValueError(
                 'Last dim of reference_points must be 2 or 4, but get {} instead.'.format(reference_points.shape[-1]))
         output = MSDeformAttnFunction.apply(

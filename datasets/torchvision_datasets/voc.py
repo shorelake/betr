@@ -13,6 +13,7 @@ import xml.etree.ElementTree as ET
 from PIL import Image
 from torchvision.datasets.utils import download_url, check_integrity, verify_str_arg
 
+from loguru import logger
 CLASS_NAMES = (
     "aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat",
     "chair", "cow", "diningtable", "dog", "horse", "motorbike", "person",
@@ -114,6 +115,8 @@ class VOCDetection(VisionDataset):
             annotation_dir = os.path.join(voc_root, 'Annotations')
 
             if not os.path.isdir(voc_root):
+                logger.error('Dataset not found or corrupted.' +
+                             ' You can use download=True to download it')
                 raise RuntimeError('Dataset not found or corrupted.' +
                                    ' You can use download=True to download it')
             file_names = self.extract_fns(image_set, voc_root)

@@ -9,6 +9,7 @@ import torch
 
 from util.misc import all_gather
 
+from loguru import logger
 
 class VocEvaluator:
     def __init__(self, voc_gt, iou_types, use_07_metric=True, ovthresh=list(range(50, 100, 5))):

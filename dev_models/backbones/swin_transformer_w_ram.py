@@ -19,6 +19,7 @@ from mmdet.utils import get_root_logger
 import mmcv
 
 import math
+from loguru import logger
 
 __all__ = ['swin_nano_ram', 'swin_tiny_ram', 'swin_small_ram', 'swin_base_ram']
 
@@ -33,6 +34,7 @@ class PositionEmbeddingSine(nn.Module):
         self.temperature = temperature
         self.normalize = normalize
         if scale is not None and normalize is False:
+            logger.error("normalize should be True if scale is passed")
             raise ValueError("normalize should be True if scale is passed")
         if scale is None:
             scale = 2 * math.pi
@@ -733,6 +735,7 @@ class SwinTransformerWithRAM(nn.Module):
         elif pretrained is None:
             self.apply(_init_weights)
         else:
+            logger.error('pretrained must be a str or None')
             raise TypeError('pretrained must be a str or None')
 
     def forward(self, x):

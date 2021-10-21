@@ -25,7 +25,7 @@ from pycocotools.coco import COCO
 import pycocotools.mask as mask_util
 
 from util.misc import all_gather
-
+from loguru import logger
 
 class CocoEvaluator(object):
     def __init__(self, coco_gt, iou_types):
@@ -82,6 +82,7 @@ class CocoEvaluator(object):
         elif iou_type == "keypoints":
             return self.prepare_for_coco_keypoint(predictions)
         else:
+            logger.error("Unknown iou type {}".format(iou_type))
             raise ValueError("Unknown iou type {}".format(iou_type))
 
     def prepare_for_coco_detection(self, predictions):
