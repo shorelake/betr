@@ -10,6 +10,7 @@ Benchmark inference speed of Deformable DETR.
 import os
 import time
 import argparse
+import sys
 
 import torch
 
@@ -18,6 +19,7 @@ from models import build_model
 from datasets import build_dataset
 from util.misc import nested_tensor_from_tensor_list
 
+torch.autograd.set_grad_enabled(False)
 
 def get_benckmark_arg_parser():
     parser = argparse.ArgumentParser('Benchmark inference speed of Deformable DETR.')
@@ -51,6 +53,10 @@ def benchmark():
     assert args.resume is None or os.path.exists(args.resume)
     dataset = build_dataset('val', main_args)
     model, _, _ = build_model(main_args)
+    if not torch.cuda.is_available():
+        print("no cuda")
+        sys.exit(1)
+    print(torch.cuda.get_device_name(torch.cuda.current_device()))
     model.cuda()
     model.eval()
     if args.resume is not None:
