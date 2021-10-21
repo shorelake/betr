@@ -92,4 +92,4 @@ def setup_logger(save_dir, distributed_rank=0, filename="trainlog.txt", mode="a"
         logger.add(save_file)
 
     # redirect stdout/stderr to loguru
-    redirect_sys_output("INFO")
+    # redirect_sys_output("INFO")

@@ -2,3 +2,7 @@ pycocotools
 tqdm
 cython
 scipy
+yacs
+timm
+loguru
+#mmcv

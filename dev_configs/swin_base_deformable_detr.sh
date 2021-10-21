@@ -8,5 +8,5 @@ PY_ARGS=${@:1}
 python -u main.py \
     --output_dir ${EXP_DIR} \
     --vit_backbone swin_base \
-    --pretrained_path ./pretrained_model/swin_tiny_patch4_window7_224.pth \
+    --pretrained_path ./pretrained_model/swin_base_patch4_window7_224.pth \
     ${PY_ARGS}
