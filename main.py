@@ -180,7 +180,7 @@ def main(args):
 
     model_without_ddp = model
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logger.info('number of params:', n_parameters)
+    logger.info(f'number of params:{n_parameters}')
 
     dataset_train, dataset_val = get_datasets(args)
     # dataset_train = build_dataset(image_set='train', args=args)

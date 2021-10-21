@@ -5,3 +5,4 @@
 # ------------------------------------------------------------------------
 
 from .coco import CocoDetection
+from .voc import VOCDetection

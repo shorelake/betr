@@ -455,7 +455,7 @@ def build(args):
         num_classes = 20
     num_classes += 1
     device = torch.device(args.device)
-    logger.info("build swin backbone")
+    logger.info(f"build swin backbone {args.vit_backbone}")
     backbone = build_swin_backbone(args)
     if args.enc_layers == 0:
         logger.info("build tranformer neck without encoder")
