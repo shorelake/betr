@@ -151,39 +151,24 @@ class DeformableTransformer(nn.Module):
         level_start_index = torch.cat((spatial_shapes.new_zeros((1, )), spatial_shapes.prod(1).cumsum(0)[:-1]))
         valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1)
 
+        # prepare input for encoder decoder
+        bs, _, c = src_flatten.shape
+
+        query_embed, tgt = torch.split(query_embed, c, dim=1)
+        query_embed = query_embed.unsqueeze(0).expand(bs, -1, -1)
+        tgt = tgt.unsqueeze(0).expand(bs, -1, -1)
+
+        reference_points = self.reference_points(query_embed).sigmoid()
+        init_reference_out = reference_points
         # encoder
-        memory = self.encoder(src_flatten, spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten, mask_flatten)
+        memory, query_embed = self.encoder(query_embed, reference_points, src_flatten, spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten, mask_flatten)
 
-        # prepare input for decoder
-        bs, _, c = memory.shape
-        if self.two_stage:
-            output_memory, output_proposals = self.gen_encoder_output_proposals(memory, mask_flatten, spatial_shapes)
 
-            # hack implementation for two-stage Deformable DETR
-            enc_outputs_class = self.decoder.class_embed[self.decoder.num_layers](output_memory)
-            enc_outputs_coord_unact = self.decoder.bbox_embed[self.decoder.num_layers](output_memory) + output_proposals
-
-            topk = self.two_stage_num_proposals
-            topk_proposals = torch.topk(enc_outputs_class[..., 0], topk, dim=1)[1]
-            topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
-            topk_coords_unact = topk_coords_unact.detach()
-            reference_points = topk_coords_unact.sigmoid()
-            init_reference_out = reference_points
-            pos_trans_out = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords_unact)))
-            query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
-        else:
-            query_embed, tgt = torch.split(query_embed, c, dim=1)
-            query_embed = query_embed.unsqueeze(0).expand(bs, -1, -1)
-            tgt = tgt.unsqueeze(0).expand(bs, -1, -1)
-            reference_points = self.reference_points(query_embed).sigmoid()
-            init_reference_out = reference_points
         # decoder
         hs, inter_references = self.decoder(tgt, reference_points, memory,
                                             spatial_shapes, level_start_index, valid_ratios, query_embed, mask_flatten)
 
         inter_references_out = inter_references
-        if self.two_stage:
-            return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact
         return hs, init_reference_out, inter_references_out, None, None
 
 
@@ -217,15 +202,16 @@ class DeformableTransformerEncoderLayer(nn.Module):
         src = self.norm2(src)
         return src
 
-    def forward(self, tgt, pos, reference_points, src, spatial_shapes, level_start_index, padding_mask=None):
+    def forward(self, tgt, pos, reference_points, src, spatial_shapes, level_start_index, det_tokens_num, padding_mask=None):
         tgt2 = self.self_attn(self.with_pos_embed(tgt, pos), reference_points, src, spatial_shapes, level_start_index, padding_mask)
         tgt = tgt + self.dropout1(tgt2)
         tgt = self.norm1(tgt)
 
         # ffn
         tgt = self.forward_ffn(tgt)
+        ret_src = tgt[:,det_tokens_num:,:]
 
-        return tgt
+        return tgt, ret_src
 
 
 
@@ -250,9 +236,22 @@ class DeformableTransformerEncoder(nn.Module):
         reference_points = reference_points[:, :, None] * valid_ratios[:, None]
         return reference_points
 
-    def forward(self, src, spatial_shapes, level_start_index, valid_ratios, pos=None, padding_mask=None):
+    def forward(self, det_tokens, det_tokens_reference_points, src, spatial_shapes, level_start_index, valid_ratios, pos=None, padding_mask=None):
         output = src
         reference_points = self.get_reference_points(spatial_shapes, valid_ratios, device=src.device)
+        
+        if det_tokens_reference_points.shape[-1] == 4:
+            det_tokens_reference_points_input = det_tokens_reference_points[:, :, None] \
+                                        * torch.cat([valid_ratios, valid_ratios], -1)[:, None]
+        else:
+            assert det_tokens_reference_points.shape[-1] == 2
+            det_tokens_reference_points_input = det_tokens_reference_points[:, :, None] * valid_ratios[:, None]
+        det_tokens_pos = torch.zeros_like(det_tokens)
+        det_tokens_num = det_tokens.shape[1]
+        # level_start_index = level_start_index + det_tokens_num
+        output = torch.cat((det_tokens, output),dim=1)
+        pos = torch.cat((det_tokens_pos,pos),dim=1)
+        reference_points = torch.cat((det_tokens_reference_points_input, reference_points),dim=1)
         if self.msi_sso is not None:
             output = src.clone()
             sso_start = level_start_index[self.msi_sso]
@@ -263,12 +262,12 @@ class DeformableTransformerEncoder(nn.Module):
             output = output[:, sso_start:sso_end,:]
             pos = pos[:,sso_start:sso_end,:]
             reference_points = reference_points[:,sso_start:sso_end,::]
-        for _, layer in enumerate(self.layers):
-            if self.msi_sso is not None:
-                output = layer(output, pos, reference_points,src, spatial_shapes, level_start_index, padding_mask)
-            else:
-                output = layer(output, pos, reference_points,output, spatial_shapes, level_start_index, padding_mask)
-        return output
+        for _, layer in enumerate(self.layers): #TODO, src not update
+            output, src = layer(output, pos, reference_points,src, spatial_shapes, level_start_index, det_tokens_num, padding_mask)
+        ret_det_tokens = output[:, :det_tokens_num,:]
+        ret_memory = output[:, det_tokens_num:,:]
+
+        return ret_memory, ret_det_tokens
 
 
 class DeformableTransformerDecoderLayer(nn.Module):

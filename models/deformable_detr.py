@@ -459,6 +459,10 @@ def build(args):
     if args.enc_layers == 0:
         logger.info("build tranformer neck without encoder")
         transformer = build_deforamble_transformer_wo_encoder(args)
+    elif args.neck_encoder == 'deftransformerwithdettoks':
+        logger.info("build tranformer neck, encoder deftransformer with dettoks")
+        from .deformable_transformer_w_dettoks import build_deforamble_transformer as build_deforamble_transformer_encoder_w_dettoks
+        transformer = build_deforamble_transformer_encoder_w_dettoks(args)
     else:
         if args.msi_sso is not None and args.msi_sso >= args.num_feature_levels:
             logger.error("build tranformer neck with mulit scale in, single scale out encoder, WRONG msi_sso")
