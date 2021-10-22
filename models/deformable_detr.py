@@ -460,6 +460,9 @@ def build(args):
         logger.info("build tranformer neck without encoder")
         transformer = build_deforamble_transformer_wo_encoder(args)
     else:
+        if args.msi_sso is not None and args.msi_sso >= args.num_feature_levels:
+            logger.error("build tranformer neck with mulit scale in, single scale out encoder, WRONG msi_sso")
+            raise ValueError("build tranformer neck with mulit scale in, single scale out encoder, WRONG msi_sso")
         transformer = build_deforamble_transformer(args)
     model = DeformableDETR(
         backbone,

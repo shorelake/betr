@@ -81,6 +81,9 @@ def get_args_parser():
     # Neck encoder
     parser.add_argument('--neck_encoder', default='deftransformer', type=str,
                         help="Name of the neck_encoder to use, now support deftransformer default, FPN, PANet") #TODO
+    ## for transformer encoder
+    parser.add_argument('--msi_sso', default=None, type=int,
+                        help="multi scale input, single scale output, which scale output, default NONE")
     # * Transformer
     parser.add_argument('--enc_layers', default=6, type=int,
                         help="Number of encoding layers in the transformer")
