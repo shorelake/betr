@@ -26,6 +26,7 @@ from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
 from .deformable_transformer import build_deforamble_transformer
 from .deformable_transformer_wo_encoder import build_deforamble_transformer_wo_encoder
+from models.cnn_necks import build_cnn_encoder
 import copy
 from loguru import logger
 
@@ -36,7 +37,7 @@ def _get_clones(module, N):
 class DeformableWithFPNEncoder(nn.Module):
     """ This is the Deformable DETR module that performs object detection """
     def __init__(self, backbone, transformer, num_classes, num_queries, num_feature_levels,
-                 aux_loss=True, with_box_refine=False, two_stage=False):
+                 aux_loss=True, with_box_refine=False, two_stage=False, cnn_encoder='fpn'):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -67,18 +68,8 @@ class DeformableWithFPNEncoder(nn.Module):
             for _ in range(num_backbone_outs):
                 in_channels = backbone.num_channels[_]
                 in_channels_list.append(in_channels)
-
-            # set FPN
-            self.fpn_inner_blocks = nn.ModuleList()
-            self.fpn_layer_blocks = nn.ModuleList()
+            self.cnn_encoder = build_cnn_encoder(cnn_encoder, num_backbone_outs, backbone.num_channels, hidden_dim)
             out_channels = hidden_dim
-            for in_channels in in_channels_list:
-                if in_channels == 0:
-                    raise ValueError("in_channels=0 is currently not supported")
-                inner_block_module = nn.Conv2d(in_channels, out_channels, 1)
-                layer_block_module = nn.Conv2d(out_channels, out_channels, 3, padding=1)
-                self.fpn_inner_blocks.append(inner_block_module)
-                self.fpn_layer_blocks.append(layer_block_module)  
             
             # in_channels = backbone.num_channels[-1]
             in_channels = out_channels
@@ -92,14 +83,6 @@ class DeformableWithFPNEncoder(nn.Module):
                 # in_channels_list.append(in_channels)
             self.input_proj = nn.ModuleList(input_proj_list)
  
-            for m in self.fpn_inner_blocks:
-                if isinstance(m, nn.Conv2d):
-                    nn.init.xavier_uniform_(m.weight, gain=1)
-                    nn.init.constant_(m.bias, 0)
-            for m in self.fpn_layer_blocks:
-                if isinstance(m, nn.Conv2d):
-                    nn.init.xavier_uniform_(m.weight, gain=1)
-                    nn.init.constant_(m.bias, 0)
         else:
             self.input_proj = nn.ModuleList([
                 nn.Sequential(
@@ -197,18 +180,7 @@ class DeformableWithFPNEncoder(nn.Module):
             masks.append(mask)
             assert mask is not None
         if self.num_feature_levels > 1:
-            # FPN part begin
-            last_inner = self.get_result_from_inner_blocks(srcs[-1], -1)
-            results = []
-            results.append(self.get_result_from_layer_blocks(last_inner, -1))
-            for idx in range(len(srcs) - 2, -1, -1):
-                inner_lateral = self.get_result_from_inner_blocks(srcs[idx], idx)
-                feat_shape = inner_lateral.shape[-2:]
-                inner_top_down = F.interpolate(last_inner, size=feat_shape, mode="nearest")
-                last_inner = inner_lateral + inner_top_down
-                results.insert(0, self.get_result_from_layer_blocks(last_inner, idx))
-            srcs = results
-            # FPN part end
+            srcs = self.cnn_encoder(srcs)
 
         if self.num_feature_levels > len(srcs):
             _len_srcs = len(srcs)
@@ -544,6 +516,7 @@ def build(args):
         aux_loss=args.aux_loss,
         with_box_refine=args.with_box_refine,
         two_stage=args.two_stage,
+        cnn_encoder=args.neck_encoder
     )
     if args.masks:
         model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))

@@ -21,6 +21,9 @@ def build_model(args):
     elif args.neck_encoder == 'deftransformerwithdettoks':
         logger.info("build default resnet deformable detr with neck encoder is Deftnf with dettoks")
         return build_default_defdetr(args)
+    elif args.neck_encoder == 'panet':
+        logger.info("build resnet deformable detr, neck encoder is panet")
+        return build_fpn_defdetr(args)
     else:
         logger.error(f"wrong neck encoder {args.neck_encoder}")
         raise ValueError(f"wrong neck encoder {args.neck_encoder}")
