@@ -9,4 +9,5 @@ python -u main.py \
     --output_dir ${EXP_DIR} \
     --vit_backbone swin_tiny \
     --pretrained_path ./pretrained_model/swin_tiny_patch4_window7_224.pth \
+    --with_box_refine \
     ${PY_ARGS}
