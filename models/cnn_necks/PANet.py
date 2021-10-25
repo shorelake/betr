@@ -19,7 +19,7 @@ class fpn(nn.Module):
                  num_backbone_outs,
                  backbone_num_channels,
                  hidden_dim,
-                 P2only=False, panet_buttomup=True, use_gn=False):
+                 P2only=False, panet_buttomup=True, use_gn=True):
         super().__init__()
         self.P2only = P2only
         self.panet_buttomup = panet_buttomup

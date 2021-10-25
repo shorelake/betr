@@ -40,7 +40,7 @@ class FeaturePyramidNetwork(nn.Module):
         self,
         num_backbone_outs,
         backbone_num_channels,
-        hidden_dim,
+        hidden_dim,use_gn=True
     ):
         super(FeaturePyramidNetwork, self).__init__()
         in_channels_list = []
@@ -52,8 +52,14 @@ class FeaturePyramidNetwork(nn.Module):
         for in_channels in in_channels_list:
             if in_channels == 0:
                 raise ValueError("in_channels=0 is currently not supported")
-            inner_block_module = nn.Conv2d(in_channels, hidden_dim, 1)
-            layer_block_module = nn.Conv2d(hidden_dim, hidden_dim, 3, padding=1)
+            if use_gn:
+                inner_block_module = nn.Sequential(nn.Conv2d(in_channels, hidden_dim, 1),
+                                                    nn.GroupNorm(32, hidden_dim))
+                layer_block_module = nn.Sequential(nn.Conv2d(hidden_dim, hidden_dim, 3, padding=1),
+                                                    nn.GroupNorm(32, hidden_dim))
+            else:
+                inner_block_module = nn.Conv2d(in_channels, hidden_dim, 1)
+                layer_block_module = nn.Conv2d(hidden_dim, hidden_dim, 3, padding=1)
             self.inner_blocks.append(inner_block_module)
             self.layer_blocks.append(layer_block_module)
 

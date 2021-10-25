@@ -71,8 +71,8 @@ class DeformableWithFPNEncoder(nn.Module):
             self.cnn_encoder = build_cnn_encoder(cnn_encoder, num_backbone_outs, backbone.num_channels, hidden_dim)
             out_channels = hidden_dim
             
-            # in_channels = backbone.num_channels[-1]
-            in_channels = out_channels
+            in_channels = backbone.num_channels[-1]
+            # in_channels = out_channels
             # go on FPN top
             for _ in range(num_feature_levels - num_backbone_outs):
                 input_proj_list.append(nn.Sequential(
@@ -187,10 +187,10 @@ class DeformableWithFPNEncoder(nn.Module):
             input_proj_index = 0
             for l in range(_len_srcs, self.num_feature_levels):
                 
-                # if l == _len_srcs:
-                #     src = self.input_proj[input_proj_index](features[-1].tensors)
-                # else:
-                src = self.input_proj[input_proj_index](srcs[-1])
+                if l == _len_srcs:
+                    src = self.input_proj[input_proj_index](features[-1].tensors)
+                else:
+                    src = self.input_proj[input_proj_index](srcs[-1])
                 m = samples.mask
                 mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
                 pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)
