@@ -29,6 +29,13 @@ def get_benckmark_arg_parser():
     parser.add_argument('--resume', type=str, help='load the pre-trained checkpoint')
     return parser
 
+def get_model(args):
+    if args.vit_backbone is not None:
+        from dev_models import build_model as build_tnf_model
+        model, criterion, postprocessors = build_tnf_model(args)
+    else:
+        model, criterion, postprocessors = build_model(args)
+    return model, criterion, postprocessors
 
 @torch.no_grad()
 def measure_average_inference_time(model, inputs, num_iters=100, warm_iters=5):
@@ -52,7 +59,7 @@ def benchmark():
     assert args.batch_size > 0
     assert args.resume is None or os.path.exists(args.resume)
     dataset = build_dataset('val', main_args)
-    model, _, _ = build_model(main_args)
+    model, _, _ = get_model(main_args)
     if not torch.cuda.is_available():
         print("no cuda")
         sys.exit(1)
