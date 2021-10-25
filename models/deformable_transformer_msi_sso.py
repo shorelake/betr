@@ -25,24 +25,25 @@ class DeformableTransformer(nn.Module):
                  num_encoder_layers=6, num_decoder_layers=6, dim_feedforward=1024, dropout=0.1,
                  activation="relu", return_intermediate_dec=False,
                  num_feature_levels=4, dec_n_points=4,  enc_n_points=4,
-                 two_stage=False, two_stage_num_proposals=300):
+                 two_stage=False, two_stage_num_proposals=300, msi_sso=None):
         super().__init__()
 
         self.d_model = d_model
         self.nhead = nhead
         self.two_stage = two_stage
         self.two_stage_num_proposals = two_stage_num_proposals
+        self.msi_sso = msi_sso
         encoder_layer = DeformableTransformerEncoderLayer(d_model, dim_feedforward,
                                                           dropout, activation,
                                                           num_feature_levels, nhead, enc_n_points,
                                                           )
-        self.encoder = DeformableTransformerEncoder(encoder_layer, num_encoder_layers)
+        self.encoder = DeformableTransformerEncoder(encoder_layer, num_encoder_layers,msi_sso=msi_sso)
 
         decoder_layer = DeformableTransformerDecoderLayer(d_model, dim_feedforward,
                                                           dropout, activation,
-                                                          num_feature_levels, nhead, dec_n_points)
+                                                          num_feature_levels, nhead, dec_n_points,msi_sso=msi_sso)
         self.decoder = DeformableTransformerDecoder(decoder_layer, num_decoder_layers, return_intermediate_dec,
-                                                    )
+                                                    msi_sso=msi_sso)
 
         self.level_embed = nn.Parameter(torch.Tensor(num_feature_levels, d_model))
 
@@ -229,11 +230,11 @@ class DeformableTransformerEncoderLayer(nn.Module):
 
 
 class DeformableTransformerEncoder(nn.Module):
-    def __init__(self, encoder_layer, num_layers):
+    def __init__(self, encoder_layer, num_layers, msi_sso=None):
         super().__init__()
         self.layers = _get_clones(encoder_layer, num_layers)
         self.num_layers = num_layers
-
+        self.msi_sso = msi_sso
     @staticmethod
     def get_reference_points(spatial_shapes, valid_ratios, device):
         reference_points_list = []
@@ -252,16 +253,28 @@ class DeformableTransformerEncoder(nn.Module):
     def forward(self, src, spatial_shapes, level_start_index, valid_ratios, pos=None, padding_mask=None):
         output = src
         reference_points = self.get_reference_points(spatial_shapes, valid_ratios, device=src.device)
-
+        if self.msi_sso is not None:
+            output = src.clone()
+            sso_start = level_start_index[self.msi_sso]
+            if self.msi_sso == len(level_start_index)-1:
+                sso_end = src.shape[1]
+            else:
+                sso_end = level_start_index[self.msi_sso+1]
+            output = output[:, sso_start:sso_end,:]
+            pos = pos[:,sso_start:sso_end,:]
+            reference_points = reference_points[:,sso_start:sso_end,::]
         for _, layer in enumerate(self.layers):
-            output = layer(output, pos, reference_points,output, spatial_shapes, level_start_index, padding_mask)
+            if self.msi_sso is not None:
+                output = layer(output, pos, reference_points,src, spatial_shapes, level_start_index, padding_mask)
+            else:
+                output = layer(output, pos, reference_points,output, spatial_shapes, level_start_index, padding_mask)
         return output
 
 
 class DeformableTransformerDecoderLayer(nn.Module):
     def __init__(self, d_model=256, d_ffn=1024,
                  dropout=0.1, activation="relu",
-                 n_levels=4, n_heads=8, n_points=4):
+                 n_levels=4, n_heads=8, n_points=4, msi_sso=None):
         super().__init__()
 
         # cross attention
@@ -313,7 +326,7 @@ class DeformableTransformerDecoderLayer(nn.Module):
 
 
 class DeformableTransformerDecoder(nn.Module):
-    def __init__(self, decoder_layer, num_layers, return_intermediate=False):
+    def __init__(self, decoder_layer, num_layers, return_intermediate=False,msi_sso=None):
         super().__init__()
         self.layers = _get_clones(decoder_layer, num_layers)
         self.num_layers = num_layers
@@ -321,6 +334,7 @@ class DeformableTransformerDecoder(nn.Module):
         # hack implementation for iterative bounding box refinement and two-stage Deformable DETR
         self.bbox_embed = None
         self.class_embed = None
+        self.msi_sso = msi_sso
 
     def forward(self, tgt, reference_points, src, src_spatial_shapes, src_level_start_index, src_valid_ratios,
                 query_pos=None, src_padding_mask=None):
@@ -328,6 +342,17 @@ class DeformableTransformerDecoder(nn.Module):
 
         intermediate = []
         intermediate_reference_points = []
+        if self.msi_sso is not None:
+            src_spatial_shapes = src_spatial_shapes[self.msi_sso].unsqueeze(0)
+            
+            src_valid_ratios = src_valid_ratios[:, self.msi_sso,:].unsqueeze(1)
+            sso_start = src_level_start_index[self.msi_sso]
+            if self.msi_sso == len(src_level_start_index)-1:
+                sso_end = src_padding_mask.shape[1]
+            else:
+                sso_end = src_level_start_index[self.msi_sso+1]
+            src_padding_mask = src_padding_mask[:, sso_start:sso_end]
+            src_level_start_index = src_level_start_index[0].unsqueeze(0)
 
         for lid, layer in enumerate(self.layers):
             if reference_points.shape[-1] == 4:
@@ -392,6 +417,6 @@ def build_deforamble_transformer(args):
         enc_n_points=args.enc_n_points,
         two_stage=args.two_stage,
         two_stage_num_proposals=args.num_queries,
-        )
+        msi_sso=args.msi_sso)
 
 

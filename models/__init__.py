@@ -9,10 +9,14 @@
 
 from .deformable_detr import build as build_default_defdetr
 from .deformable_detr_fpn import build as build_fpn_defdetr
+from .deformable_detr_msi_sso import build as build_msi_sso_defdetr
 from loguru import logger
 
 def build_model(args):
-    if args.neck_encoder == 'deftransformer':
+    if args.msi_sso is not None:
+        logger.info("build msi_sso deformable detr, neck encoder now must be transformer")
+        return build_msi_sso_defdetr(args)
+    elif args.neck_encoder == 'deftransformer':
         logger.info("build default resnet deformable detr")
         return build_default_defdetr(args)
     elif args.neck_encoder == 'fpn':
