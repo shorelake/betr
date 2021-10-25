@@ -68,7 +68,7 @@ class DeformableWithFPNEncoder(nn.Module):
             for _ in range(num_backbone_outs):
                 in_channels = backbone.num_channels[_]
                 in_channels_list.append(in_channels)
-            self.cnn_encoder = build_cnn_encoder(cnn_encoder, num_backbone_outs, backbone.num_channels, hidden_dim)
+            self.cnn_encoder = build_cnn_encoder(cnn_encoder, num_backbone_outs, in_channels_list, hidden_dim)
             out_channels = hidden_dim
             
             in_channels = backbone.num_channels[-1]
@@ -181,7 +181,6 @@ class DeformableWithFPNEncoder(nn.Module):
             assert mask is not None
         if self.num_feature_levels > 1:
             srcs = self.cnn_encoder(srcs)
-
         if self.num_feature_levels > len(srcs):
             _len_srcs = len(srcs)
             input_proj_index = 0
