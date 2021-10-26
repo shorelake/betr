@@ -41,9 +41,8 @@ class DeformableTransformer(nn.Module):
 
         decoder_layer = DeformableTransformerDecoderLayer(d_model, dim_feedforward,
                                                           dropout, activation,
-                                                          num_feature_levels, nhead, dec_n_points,msi_sso=msi_sso)
-        self.decoder = DeformableTransformerDecoder(decoder_layer, num_decoder_layers, return_intermediate_dec,
-                                                    msi_sso=msi_sso)
+                                                          num_feature_levels, nhead, dec_n_points)
+        self.decoder = DeformableTransformerDecoder(decoder_layer, num_decoder_layers, return_intermediate_dec)
 
         self.level_embed = nn.Parameter(torch.Tensor(num_feature_levels, d_model))
 
@@ -144,15 +143,22 @@ class DeformableTransformer(nn.Module):
             lvl_pos_embed_flatten.append(lvl_pos_embed)
             src_flatten.append(src)
             mask_flatten.append(mask)
+        
+        sso_tgt_flatten = src_flatten[self.msi_sso]
+        sso_lvl_pos_embed_flatten = lvl_pos_embed_flatten[self.msi_sso]
+        sso_mask_flatten = mask_flatten[self.msi_sso]
         src_flatten = torch.cat(src_flatten, 1)
         mask_flatten = torch.cat(mask_flatten, 1)
-        lvl_pos_embed_flatten = torch.cat(lvl_pos_embed_flatten, 1)
         spatial_shapes = torch.as_tensor(spatial_shapes, dtype=torch.long, device=src_flatten.device)
         level_start_index = torch.cat((spatial_shapes.new_zeros((1, )), spatial_shapes.prod(1).cumsum(0)[:-1]))
+        sso_spatial_shapes = spatial_shapes[self.msi_sso].unsqueeze(0)
+        sso_level_start_index = sso_spatial_shapes.new_zeros((1, ))
+        sso_valid_ratios = self.get_valid_ratio(masks[self.msi_sso])
+        sso_valid_ratios = sso_valid_ratios.unsqueeze(1)
         valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1)
 
         # encoder
-        memory = self.encoder(src_flatten, spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten, mask_flatten)
+        memory = self.encoder(sso_tgt_flatten, src_flatten, spatial_shapes, level_start_index, valid_ratios, sso_lvl_pos_embed_flatten, mask_flatten)
 
         # prepare input for decoder
         bs, _, c = memory.shape
@@ -177,9 +183,10 @@ class DeformableTransformer(nn.Module):
             tgt = tgt.unsqueeze(0).expand(bs, -1, -1)
             reference_points = self.reference_points(query_embed).sigmoid()
             init_reference_out = reference_points
+        
         # decoder
         hs, inter_references = self.decoder(tgt, reference_points, memory,
-                                            spatial_shapes, level_start_index, valid_ratios, query_embed, mask_flatten)
+                                            sso_spatial_shapes, sso_level_start_index, sso_valid_ratios, query_embed, sso_mask_flatten)
 
         inter_references_out = inter_references
         if self.two_stage:
@@ -236,45 +243,33 @@ class DeformableTransformerEncoder(nn.Module):
         self.num_layers = num_layers
         self.msi_sso = msi_sso
     @staticmethod
-    def get_reference_points(spatial_shapes, valid_ratios, device):
+    def get_reference_points(spatial_shapes, valid_ratios, msi_sso, device):
         reference_points_list = []
         for lvl, (H_, W_) in enumerate(spatial_shapes):
-
-            ref_y, ref_x = torch.meshgrid(torch.linspace(0.5, H_ - 0.5, H_, dtype=torch.float32, device=device),
-                                          torch.linspace(0.5, W_ - 0.5, W_, dtype=torch.float32, device=device))
-            ref_y = ref_y.reshape(-1)[None] / (valid_ratios[:, None, lvl, 1] * H_)
-            ref_x = ref_x.reshape(-1)[None] / (valid_ratios[:, None, lvl, 0] * W_)
-            ref = torch.stack((ref_x, ref_y), -1)
-            reference_points_list.append(ref)
-        reference_points = torch.cat(reference_points_list, 1)
+            if lvl == msi_sso:
+                ref_y, ref_x = torch.meshgrid(torch.linspace(0.5, H_ - 0.5, H_, dtype=torch.float32, device=device),
+                                            torch.linspace(0.5, W_ - 0.5, W_, dtype=torch.float32, device=device))
+                ref_y = ref_y.reshape(-1)[None] / (valid_ratios[:, None, lvl, 1] * H_)
+                ref_x = ref_x.reshape(-1)[None] / (valid_ratios[:, None, lvl, 0] * W_)
+                ref = torch.stack((ref_x, ref_y), -1)
+                reference_points = ref
+        # reference_points = torch.cat(reference_points_list, 1)
         reference_points = reference_points[:, :, None] * valid_ratios[:, None]
         return reference_points
 
-    def forward(self, src, spatial_shapes, level_start_index, valid_ratios, pos=None, padding_mask=None):
-        output = src
-        reference_points = self.get_reference_points(spatial_shapes, valid_ratios, device=src.device)
-        if self.msi_sso is not None:
-            output = src.clone()
-            sso_start = level_start_index[self.msi_sso]
-            if self.msi_sso == len(level_start_index)-1:
-                sso_end = src.shape[1]
-            else:
-                sso_end = level_start_index[self.msi_sso+1]
-            output = output[:, sso_start:sso_end,:]
-            pos = pos[:,sso_start:sso_end,:]
-            reference_points = reference_points[:,sso_start:sso_end,::]
+    def forward(self, sso_tgt, src, spatial_shapes, level_start_index, valid_ratios, pos=None, padding_mask=None):
+        output = sso_tgt
+        reference_points = self.get_reference_points(spatial_shapes, valid_ratios, self.msi_sso, device=src.device)
+
         for _, layer in enumerate(self.layers):
-            if self.msi_sso is not None:
-                output = layer(output, pos, reference_points,src, spatial_shapes, level_start_index, padding_mask)
-            else:
-                output = layer(output, pos, reference_points,output, spatial_shapes, level_start_index, padding_mask)
+            output = layer(output, pos, reference_points,src, spatial_shapes, level_start_index, padding_mask)
         return output
 
 
 class DeformableTransformerDecoderLayer(nn.Module):
     def __init__(self, d_model=256, d_ffn=1024,
                  dropout=0.1, activation="relu",
-                 n_levels=4, n_heads=8, n_points=4, msi_sso=None):
+                 n_levels=4, n_heads=8, n_points=4):
         super().__init__()
 
         # cross attention
@@ -326,7 +321,7 @@ class DeformableTransformerDecoderLayer(nn.Module):
 
 
 class DeformableTransformerDecoder(nn.Module):
-    def __init__(self, decoder_layer, num_layers, return_intermediate=False,msi_sso=None):
+    def __init__(self, decoder_layer, num_layers, return_intermediate=False):
         super().__init__()
         self.layers = _get_clones(decoder_layer, num_layers)
         self.num_layers = num_layers
@@ -334,7 +329,7 @@ class DeformableTransformerDecoder(nn.Module):
         # hack implementation for iterative bounding box refinement and two-stage Deformable DETR
         self.bbox_embed = None
         self.class_embed = None
-        self.msi_sso = msi_sso
+
 
     def forward(self, tgt, reference_points, src, src_spatial_shapes, src_level_start_index, src_valid_ratios,
                 query_pos=None, src_padding_mask=None):
@@ -342,17 +337,6 @@ class DeformableTransformerDecoder(nn.Module):
 
         intermediate = []
         intermediate_reference_points = []
-        if self.msi_sso is not None:
-            src_spatial_shapes = src_spatial_shapes[self.msi_sso].unsqueeze(0)
-            
-            src_valid_ratios = src_valid_ratios[:, self.msi_sso,:].unsqueeze(1)
-            sso_start = src_level_start_index[self.msi_sso]
-            if self.msi_sso == len(src_level_start_index)-1:
-                sso_end = src_padding_mask.shape[1]
-            else:
-                sso_end = src_level_start_index[self.msi_sso+1]
-            src_padding_mask = src_padding_mask[:, sso_start:sso_end]
-            src_level_start_index = src_level_start_index[0].unsqueeze(0)
 
         for lid, layer in enumerate(self.layers):
             if reference_points.shape[-1] == 4:
@@ -402,7 +386,10 @@ def _get_activation_fn(activation):
     raise RuntimeError(F"activation should be relu/gelu, not {activation}.")
 
 
-def build_deforamble_transformer(args):
+def build_deforamble_transformer_msi_sso(args):
+    if args.msi_sso is None:
+        logger.error("--msi_sso should be init")
+        raise ValueError("--msi_sso should be init")
     return DeformableTransformer(
         d_model=args.hidden_dim,
         nhead=args.nheads,
