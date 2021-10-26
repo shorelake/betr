@@ -305,8 +305,9 @@ class SwinTransformerBlock(nn.Module):
         x = self.norm1(x)
         
         x = x.view(B, H, W, C)
+        patch_tokens = None
         if self.activate_self_attn:
-            patch_tokens = None
+            
             det_tokens = self.norm1(det_tokens)
             det_shortcut = det_tokens
             if self.activate_cross_attn:
