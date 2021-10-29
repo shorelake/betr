@@ -29,7 +29,7 @@ def _is_power_of_2(n):
 
 
 class MSDeformAttn(nn.Module):
-    def __init__(self, d_model=256, n_levels=4, n_heads=8, n_points=4):
+    def __init__(self, d_model=256, n_levels=4, n_heads=8, n_points=4, in_model=None):
         """
         Multi-Scale Deformable Attention Module
         :param d_model      hidden dimension
@@ -48,7 +48,10 @@ class MSDeformAttn(nn.Module):
                           "which is more efficient in our CUDA implementation.")
             warnings.warn("You'd better set d_model in MSDeformAttn to make the dimension of each attention head a power of 2 "
                           "which is more efficient in our CUDA implementation.")
-
+        if in_model is None:
+            self.in_model = d_model
+        else:
+            self.in_model = in_model
         self.im2col_step = 64
 
         self.d_model = d_model
@@ -56,8 +59,8 @@ class MSDeformAttn(nn.Module):
         self.n_heads = n_heads
         self.n_points = n_points
 
-        self.sampling_offsets = nn.Linear(d_model, n_heads * n_levels * n_points * 2)
-        self.attention_weights = nn.Linear(d_model, n_heads * n_levels * n_points)
+        self.sampling_offsets = nn.Linear(self.in_model, n_heads * n_levels * n_points * 2)
+        self.attention_weights = nn.Linear(self.in_model, n_heads * n_levels * n_points)
         self.value_proj = nn.Linear(d_model, d_model)
         self.output_proj = nn.Linear(d_model, d_model)
 

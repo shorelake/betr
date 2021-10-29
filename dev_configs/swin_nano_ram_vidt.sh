@@ -17,4 +17,5 @@ python -u main.py \
     --lr_backbone 2e-4 \
     --lr 2e-4 \
     --pretrained_path ./pretrained_model/swin_nano_patch4_window7_224.pth \
+    --with_box_refine \
     ${PY_ARGS}

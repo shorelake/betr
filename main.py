@@ -84,6 +84,9 @@ def get_args_parser():
     ## for transformer encoder
     parser.add_argument('--msi_sso', default=None, type=int,
                         help="multi scale input, single scale output, which scale output, default NONE")
+    ## for transformer decoder
+    parser.add_argument('--update_query_pos', action='store_true',
+                        help="update query pos in cross attention if flag is provided")
     # * Transformer
     parser.add_argument('--enc_layers', default=6, type=int,
                         help="Number of encoding layers in the transformer")
