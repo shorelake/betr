@@ -17,6 +17,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
 import datasets
 import util.misc as utils
@@ -29,6 +30,7 @@ from models import build_model
 
 from loguru import logger
 from util.logger import setup_logger
+from util.scheduler import create_scheduler
 
 def get_args_parser():
     parser = argparse.ArgumentParser('Deformable DETR Detector', add_help=False)
@@ -47,6 +49,16 @@ def get_args_parser():
     parser.add_argument('--lr_drop_epochs', default=None, type=int, nargs='+')
     parser.add_argument('--clip_max_norm', default=0.1, type=float,
                         help='gradient clipping max norm')
+
+    # set cosine scheduler
+    parser.add_argument('--warmup-lr', type=float, default=1e-6, metavar='LR',
+                        help='warmup learning rate (default: 1e-6)')
+    parser.add_argument('--min-lr', type=float, default=1e-7, metavar='LR',
+                        help='lower lr bound for cyclic schedulers that hit 0 (1e-5)')
+    parser.add_argument('--warmup-epochs', type=int, default=0, metavar='N',
+                        help='epochs to warmup LR, if scheduler supports')
+    parser.add_argument('--decay-rate', '--dr', type=float, default=0.1, metavar='RATE',
+                        help='LR decay rate (default: 0.1)')
 
 
     parser.add_argument('--sgd', action='store_true')
@@ -250,13 +262,11 @@ def main(args):
     else:
         optimizer = torch.optim.AdamW(param_dicts, lr=args.lr,
                                       weight_decay=args.weight_decay)
-    if args.lr_scheduler == 'steplr':
-        lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, args.lr_drop)
-    elif args.lr_scheduler == 'cosinelr':
-        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
-    else:
-        logger.error("{} learning rate scheduler not supported".format(args.lr_scheduler))
-        raise ValueError("{} learning rate scheduler not supported".format(args.lr_scheduler))
+    # if args.lr_scheduler == 'steplr':
+    #     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, args.lr_drop)
+    # elif args.lr_scheduler == 'cosinelr':
+    #     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+    lr_scheduler, _ = create_scheduler(args, optimizer)
 
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
