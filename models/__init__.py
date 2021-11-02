@@ -14,6 +14,10 @@ def build_model(args):
         from models.def_detr import build_defdetr
         logger.info("build deformable detr")
         return build_defdetr(args)
+    elif args.detector == 'anchor_detr':
+        from models.anchor_detr import build_anchordetr
+        logger.info("build anchor detr")
+        return build_anchordetr(args)
     else:
         logger.error(f"wrong detector {args.detector}")
         raise ValueError(f"wrong detector {args.detector}")

@@ -89,8 +89,8 @@ def get_args_parser():
     parser.add_argument('--position_embedding_scale', default=2 * np.pi, type=float,
                         help="position / size * scale")
     parser.add_argument('--num_feature_levels', default=4, type=int, help='number of feature levels')
-
-    # Neck encoder
+    # DefDETR
+    ## Neck encoder
     parser.add_argument('--neck_encoder', default='deftransformer', type=str,
                         help="Name of the neck_encoder to use, now support deftransformer default, FPN, deftransformerwithdettoks") #TODO
     ## for transformer encoder
@@ -112,10 +112,24 @@ def get_args_parser():
                         help="Dropout applied in the transformer")
     parser.add_argument('--nheads', default=8, type=int,
                         help="Number of attention heads inside the transformer's attentions")
+    ### Def DETR setting
     parser.add_argument('--num_queries', default=300, type=int,
                         help="Number of query slots")
     parser.add_argument('--dec_n_points', default=4, type=int)
     parser.add_argument('--enc_n_points', default=4, type=int)
+    
+    ### anchor detr setting
+    parser.add_argument('--num_query_position', default=300, type=int,
+                        help="Number of query positions")
+    parser.add_argument('--num_query_pattern', default=3, type=int,
+                        help="Number of query patterns")
+    parser.add_argument('--spatial_prior', default='learned', choices=['learned', 'grid'],
+                        type=str,help="Number of query patterns")
+    parser.add_argument('--attention_type',
+                        # default='nn.MultiheadAttention',
+                        default="RCDA",
+                        choices=['RCDA', 'nn.MultiheadAttention'],
+                        type=str,help="Type of attention module")
 
     # * Segmentation
     parser.add_argument('--masks', action='store_true',
