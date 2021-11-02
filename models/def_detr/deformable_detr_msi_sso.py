@@ -20,9 +20,9 @@ from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
                        accuracy, get_world_size, interpolate,
                        is_dist_avail_and_initialized, inverse_sigmoid)
 
-from .backbone import build_backbone
-from .matcher import build_matcher
-from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
+from models.backbone import build_backbone
+from models.matcher import build_matcher
+from models.segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
 from .deformable_transformer_msi_sso import build_deforamble_transformer_msi_sso
 
@@ -80,7 +80,7 @@ class DeformableDETR(nn.Module):
         # else:
         self.input_proj = nn.ModuleList([
             nn.Sequential(
-                nn.Conv2d(backbone.num_channels[self.msi_sso], hidden_dim, kernel_size=1),
+                nn.Conv2d(backbone.num_channels[-1], hidden_dim, kernel_size=1),
                 nn.GroupNorm(32, hidden_dim),
             )])
         self.backbone = backbone
@@ -145,19 +145,19 @@ class DeformableDETR(nn.Module):
                 srcs.append(src)
             masks.append(mask)
             assert mask is not None
-        if self.num_feature_levels > len(srcs):
-            _len_srcs = len(srcs)
-            for l in range(_len_srcs, self.num_feature_levels):
-                if l == _len_srcs:
-                    src = self.input_proj[l](features[-1].tensors)
-                else:
-                    src = self.input_proj[l](srcs[-1])
-                m = samples.mask
-                mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
-                pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)
-                srcs.append(src)
-                masks.append(mask)
-                pos.append(pos_l)
+        # if self.num_feature_levels > len(srcs):
+        #     _len_srcs = len(srcs)
+        #     for l in range(_len_srcs, self.num_feature_levels):
+        #         if l == _len_srcs:
+        #             src = self.input_proj[l](features[-1].tensors)
+        #         else:
+        #             src = self.input_proj[l](srcs[-1])
+        #         m = samples.mask
+        #         mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
+        #         pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)
+        #         srcs.append(src)
+        #         masks.append(mask)
+        #         pos.append(pos_l)
 
         query_embeds = None
         if not self.two_stage:

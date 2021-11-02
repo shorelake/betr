@@ -133,43 +133,50 @@ class DeformableTransformer(nn.Module):
         lvl_pos_embed_flatten = []
         spatial_shapes = []
         for lvl, (src, mask, pos_embed) in enumerate(zip(srcs, masks, pos_embeds)):
-            bs, c, h, w = src.shape
-            spatial_shape = (h, w)
-            spatial_shapes.append(spatial_shape)
-            src = src.flatten(2).transpose(1, 2)
-            mask = mask.flatten(1)
-            pos_embed = pos_embed.flatten(2).transpose(1, 2)
             if lvl == self.msi_sso:
+                pos_embed = pos_embed.flatten(2).transpose(1, 2)
                 lvl_pos_embed = pos_embed + self.level_embed[0].view(1, 1, -1)
+                bs, c, h, w = src.shape
+                spatial_shape = (h, w)
+                spatial_shapes.append(spatial_shape)
+                src = src.flatten(2).transpose(1, 2)
+                mask = mask.flatten(1)
+
+                lvl_pos_embed_flatten.append(lvl_pos_embed)
+                src_flatten.append(src)
+                mask_flatten.append(mask)
             else:
-                lvl_pos_embed = pos_embed
-            lvl_pos_embed_flatten.append(lvl_pos_embed)
-            src_flatten.append(src)
-            mask_flatten.append(mask)
-        # import pdb;pdb.set_trace()
+                pos_embed = pos_embed.flatten(2).transpose(1, 2)
+                lvl_pos_embed = pos_embed.detach()
+                bs, c, h, w = src.shape
+                spatial_shape = (h, w)
+                spatial_shapes.append(spatial_shape)
+                src = src.flatten(2).transpose(1, 2).detach()
+                mask = mask.flatten(1).detach()
+
+                lvl_pos_embed_flatten.append(lvl_pos_embed)
+                src_flatten.append(src)
+                mask_flatten.append(mask)
+
+
         spatial_shapes = torch.as_tensor(spatial_shapes, dtype=torch.long, device=src_flatten[0].device)
-        # valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1)
+
+        index_src_flatten = src_flatten[self.msi_sso]
+        index_spatial_shapes = spatial_shapes[self.msi_sso].unsqueeze(0)
+        index_level_start_index = index_spatial_shapes.new_zeros((1,))
+        index_valid_ratios = self.get_valid_ratio(masks[self.msi_sso])
+        index_valid_ratios = index_valid_ratios.unsqueeze(1)
+        index_mask_flatten = mask_flatten[self.msi_sso]
 
         sso_tgt_flatten = src_flatten[self.msi_sso]
         sso_lvl_pos_embed_flatten = lvl_pos_embed_flatten[self.msi_sso]
         sso_mask_flatten = mask_flatten[self.msi_sso]
 
-        index_src_flatten = src_flatten[self.msi_sso]
-        index_mask_flatten = mask_flatten[self.msi_sso]
-        index_spatial_shapes = spatial_shapes[self.msi_sso].unsqueeze(0)
-        index_level_start_index = index_spatial_shapes.new_zeros((1, ))
-        index_valid_ratios = self.get_valid_ratio(masks[self.msi_sso]).unsqueeze(1)
-
-        # src_flatten = torch.cat(src_flatten, 1)
-        # mask_flatten = torch.cat(mask_flatten, 1)
-        # level_start_index = torch.cat((spatial_shapes.new_zeros((1, )), spatial_shapes.prod(1).cumsum(0)[:-1]))
-
+       
         sso_spatial_shapes = spatial_shapes[self.msi_sso].unsqueeze(0)
         sso_level_start_index = sso_spatial_shapes.new_zeros((1, ))
         sso_valid_ratios = self.get_valid_ratio(masks[self.msi_sso])
         sso_valid_ratios = sso_valid_ratios.unsqueeze(1)
-
-        
 
         # encoder
         memory = self.encoder(sso_tgt_flatten, index_src_flatten, index_spatial_shapes, index_level_start_index, index_valid_ratios, sso_lvl_pos_embed_flatten, index_mask_flatten)
@@ -260,7 +267,6 @@ class DeformableTransformerEncoder(nn.Module):
     def get_reference_points(spatial_shapes, valid_ratios, msi_sso, device):
         reference_points_list = []
         for lvl, (H_, W_) in enumerate(spatial_shapes):
-            # if lvl == msi_sso:
             ref_y, ref_x = torch.meshgrid(torch.linspace(0.5, H_ - 0.5, H_, dtype=torch.float32, device=device),
                                         torch.linspace(0.5, W_ - 0.5, W_, dtype=torch.float32, device=device))
             ref_y = ref_y.reshape(-1)[None] / (valid_ratios[:, None, lvl, 1] * H_)

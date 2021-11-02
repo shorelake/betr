@@ -311,7 +311,7 @@ class SwinTransformerBlock(nn.Module):
             det_tokens = self.norm1(det_tokens)
             det_shortcut = det_tokens
             if self.activate_cross_attn:
-                patch_tokens = x.clone()
+                patch_tokens = x #.clone()
 
         # pad feature maps to multiples of window size
         pad_l = pad_t = 0
