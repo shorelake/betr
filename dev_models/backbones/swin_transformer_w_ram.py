@@ -687,15 +687,14 @@ class SwinTransformerWithRAM(nn.Module):
         self.det_tokens = nn.Parameter(torch.zeros(1, det_token_num, self.embed_dim * 2 ** init_index))
         self.det_tokens = trunc_normal_(self.det_tokens, std=.02)
         for index2, flag in enumerate(activate_self_attns):
-            if flag and index2 != 0:
+            if flag and index2 != self.num_layers - 1:
                 layer = nn.Sequential(
-                    nn.Linear(self.embed_dim * 2 ** (index2-1), self.embed_dim * 2 ** index2),
-                    nn.LayerNorm(self.embed_dim * 2 ** index2),
+                    nn.Linear(self.embed_dim * 2 ** index2, self.embed_dim * 2 ** (index2+1)),
+                    nn.LayerNorm(self.embed_dim * 2 ** (index2+1)),
                     )
                 # layer = nn.Linear(self.embed_dim * 2 ** (index2-1), self.embed_dim * 2 ** index2)
-                layer_name = f'det_linear{index2-1}'
+                layer_name = f'det_linear{index2}'
                 self.add_module(layer_name, layer)
-
 
     def _freeze_stages(self):
         if self.frozen_stages >= 0:
