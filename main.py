@@ -68,6 +68,7 @@ def get_args_parser():
     # Variants of Deformable DETR
     parser.add_argument('--with_box_refine', default=False, action='store_true')
     parser.add_argument('--two_stage', default=False, action='store_true')
+    parser.add_argument('--init_tgt_withtopk', default=False, action='store_true')
 
     # Model parameters
     parser.add_argument('--frozen_weights', type=str, default=None,
@@ -180,6 +181,9 @@ def get_args_parser():
     parser.add_argument('--num_workers', default=2, type=int)
     parser.add_argument('--cache_mode', default=False, action='store_true', help='whether to cache images on memory')
 
+    # extra exp
+    parser.add_argument('--no_input_proj', action='store_true')
+
     return parser
 
 
@@ -212,6 +216,33 @@ def main(args):
     model, criterion, postprocessors = get_model(args)
     # model, criterion, postprocessors = build_model(args)
     model.to(device)
+
+    if getattr(model.backbone[0], 'backbone_names', None) is not None:
+        # print('*'*30)
+        args.lr_backbone_names = model.backbone[0].backbone_names
+        non_backbone_names = getattr(model.backbone[0], 'non_backbone_names', [])
+        frozen_names = getattr(model.backbone[0], 'frozen_names', [])
+
+        for name in args.lr_backbone_names:
+            assert name.startswith('backbone.0.'), name
+        
+        contains_any_keyword = lambda sentence, keywords: sum([k in sentence for k in keywords]) > 0
+        cnt_param = cnt_param_backbone = cnt_param_non_backbone = cnt_param_frozen = 0
+        for name, param in model.backbone[0].named_parameters():
+            if param.requires_grad:
+                cnt_param += 1
+                cnt_param_backbone += contains_any_keyword('backbone.0.' + name, args.lr_backbone_names)
+                cnt_param_non_backbone += contains_any_keyword('backbone.0.' + name, non_backbone_names)
+
+                if contains_any_keyword('backbone.0.' + name, frozen_names):
+                    param.requires_grad_(False)
+                    cnt_param_frozen += 1
+        
+        logger.info(f'args.lr_backbone_names change to: {args.lr_backbone_names}')
+        logger.info(f'#backbone param: {cnt_param_backbone} / {cnt_param}')
+        assert cnt_param == cnt_param_backbone + cnt_param_non_backbone
+        # print('*'*30)
+
 
     model_without_ddp = model
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -252,7 +283,7 @@ def main(args):
         return out
 
     for n, p in model_without_ddp.named_parameters():
-        print(n)
+        logger.info(n)
 
     param_dicts = [
         {

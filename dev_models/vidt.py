@@ -14,13 +14,15 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 import math
+from dev_models import backbones
 
 from util import box_ops
 from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
                        accuracy, get_world_size, interpolate,
                        is_dist_avail_and_initialized, inverse_sigmoid)
 
-from .backbone_ram import build_backbone as build_swin_backbone_with_ram
+# from .backbone_ram import build_backbone as build_swin_backbone_with_ram
+from .backbone_factory import build_backbone
 from .matcher import build_matcher
 from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
@@ -477,7 +479,8 @@ def build(args):
     num_classes += 1
     device = torch.device(args.device)
     logger.info(f"build swin backbone with ram {args.vit_backbone}")
-    backbone = build_swin_backbone_with_ram(args)
+    # backbone = build_swin_backbone_with_ram(args)
+    backbone = build_backbone(args)
     if args.enc_layers == 0:
         logger.info("build tranformer neck without encoder")
         transformer = build_deforamble_transformer_wo_encoder(args)

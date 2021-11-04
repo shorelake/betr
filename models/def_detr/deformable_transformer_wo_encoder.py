@@ -55,12 +55,14 @@ class DeformableTransformer(nn.Module):
                  num_encoder_layers=6, num_decoder_layers=6, dim_feedforward=1024, dropout=0.1,
                  activation="relu", return_intermediate_dec=False,
                  num_feature_levels=4, dec_n_points=4,  enc_n_points=4,
-                 two_stage=False, two_stage_num_proposals=300, update_query_pos=False):
+                 two_stage=False, two_stage_num_proposals=300, update_query_pos=False,
+                 init_tgt_withtopk=False):
         super().__init__()
 
         self.d_model = d_model
         self.nhead = nhead
         self.two_stage = two_stage
+        self.init_tgt_withtopk = init_tgt_withtopk
         self.two_stage_num_proposals = two_stage_num_proposals
         decoder_layer = DeformableTransformerDecoderLayer(d_model, dim_feedforward,
                                                           dropout, activation,
@@ -72,8 +74,14 @@ class DeformableTransformer(nn.Module):
         if two_stage:
             self.enc_output = nn.Linear(d_model, d_model)
             self.enc_output_norm = nn.LayerNorm(d_model)
-            self.pos_trans = nn.Linear(d_model * 2, d_model * 2)
-            self.pos_trans_norm = nn.LayerNorm(d_model * 2)
+            if init_tgt_withtopk:
+                self.tgt_trans = nn.Linear(d_model , d_model )
+                self.tgt_trans_norm = nn.LayerNorm(d_model)
+                self.pos_trans = nn.Linear(d_model * 2, d_model)
+                self.pos_trans_norm = nn.LayerNorm(d_model)
+            else:
+                self.pos_trans = nn.Linear(d_model * 2, d_model * 2)
+                self.pos_trans_norm = nn.LayerNorm(d_model * 2)
         else:
             self.reference_points = nn.Linear(d_model, 2)
 
@@ -191,8 +199,15 @@ class DeformableTransformer(nn.Module):
             topk_coords_unact = topk_coords_unact.detach()
             reference_points = topk_coords_unact.sigmoid()
             init_reference_out = reference_points
-            pos_trans_out = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords_unact)))
-            query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
+            if self.init_tgt_withtopk:
+                # import pdb;pdb.set_trace()
+                query_embed = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords_unact)))
+                topk_memory = torch.gather(memory, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, c))
+                topk_memory = topk_memory.detach()
+                tgt = self.tgt_trans_norm(self.tgt_trans(topk_memory))
+            else:
+                pos_trans_out = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords_unact)))
+                query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
         else:
             query_embed, tgt = torch.split(query_embed, c, dim=1)
             query_embed = query_embed.unsqueeze(0).expand(bs, -1, -1)
@@ -365,7 +380,8 @@ def build_deforamble_transformer_wo_encoder(args):
         enc_n_points=args.enc_n_points,
         two_stage=args.two_stage, # transformer neck w/o encoder cannot support original two stage
         two_stage_num_proposals=args.num_queries,
-        update_query_pos=args.update_query_pos
+        update_query_pos=args.update_query_pos,
+        init_tgt_withtopk=args.init_tgt_withtopk,
         )
 
 

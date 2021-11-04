@@ -377,7 +377,6 @@ class DeformableTransformerDecoder(nn.Module):
             pos_transformation = None
             query_sine_embed = None
             if self.update_query_pos:
-                import pdb;pdb.set_trace()
                 obj_center = reference_points[..., :2]
                 if lid == 0:
                     pos_transformation = 1
