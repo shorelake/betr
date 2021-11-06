@@ -7,18 +7,17 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 # ------------------------------------------------------------------------
 
-from .deformable_detr import build as build_defdetr
-from .vidt import build as build_vidt
 from loguru import logger
 
 def build_model(args):
-    if args.detector == 'vidt':
-        logger.info("build vit backbone vidt detector")
-        return build_vidt(args)
-    elif args.detector == 'deformable_detr':
+    if args.detector == 'deformable_detr':
+        from dev_models.def_detr import build_defdetr
         logger.info("build vit backbone deformable detr detector")
         return build_defdetr(args)
+    elif args.detector == 'vidt':
+        from dev_models.vidt import build_vidt
+        logger.info("build vit backbone vidt detector")
+        return build_vidt(args)
     else:
-        logger.error("Wrong vit backbone detector name")
-        raise ValueError("Wrong detector name")
-
+        logger.error(f"Wrong vit backbone detector name {args.detector}")
+        raise ValueError(f"Wrong vit backbone detector name {args.detector}")

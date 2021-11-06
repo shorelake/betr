@@ -9,7 +9,7 @@ def build_backbone(args):
         return build_backbone(args)
     elif hasattr(swin_transformer_w_ram, args.vit_backbone):
         logger.info(f'build swin backbone with ram {args.vit_backbone}')
-        from .backbone_ram import build_backbone
+        from dev_models.backbones.swin_transformer_w_ram import build_backbone
         return build_backbone(args)
     elif hasattr(swin_transformer_w_fuse, args.vit_backbone):
         logger.info(f'build swin backbone with fuse {args.vit_backbone}')

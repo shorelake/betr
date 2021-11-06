@@ -14,32 +14,31 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 import math
-from dev_models import backbones
 
 from util import box_ops
 from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
                        accuracy, get_world_size, interpolate,
                        is_dist_avail_and_initialized, inverse_sigmoid)
 
-# from .backbone_ram import build_backbone as build_swin_backbone_with_ram
-from .backbone_factory import build_backbone
-from .matcher import build_matcher
-from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
+# from .backbone import build_backbone as build_swin_backbone
+from dev_models.backbone_factory import build_backbone
+from dev_models.matcher import build_matcher
+from dev_models.segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
 from .deformable_transformer import build_deforamble_transformer
 from .deformable_transformer_wo_encoder import build_deforamble_transformer_wo_encoder
 import copy
-from timm.models.layers import DropPath, to_2tuple, trunc_normal_
+
 from loguru import logger
 
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
 
-class vidt(nn.Module):
+class DeformableDETR(nn.Module):
     """ This is the Deformable DETR module that performs object detection """
     def __init__(self, backbone, transformer, num_classes, num_queries, num_feature_levels,
-                 aux_loss=True, with_box_refine=False, two_stage=False):
+                 aux_loss=True, with_box_refine=False, two_stage=False, args=None):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -61,8 +60,8 @@ class vidt(nn.Module):
         self.class_embed = nn.Linear(hidden_dim, num_classes)
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
         self.num_feature_levels = num_feature_levels
-        # if not two_stage:
-        #     self.query_embed = nn.Embedding(num_queries, hidden_dim*2)
+        if not two_stage:
+            self.query_embed = nn.Embedding(num_queries, hidden_dim*2)
         if num_feature_levels > 1:
             num_backbone_outs = len(backbone.strides)
             input_proj_list = []
@@ -85,12 +84,6 @@ class vidt(nn.Module):
                     nn.Conv2d(backbone.num_channels[0], hidden_dim, kernel_size=1),
                     nn.GroupNorm(32, hidden_dim),
                 )])
-
-        self.det_tokens_proj = nn.Sequential(
-                    nn.Linear(backbone.num_channels[-1], hidden_dim),
-                    nn.LayerNorm(hidden_dim),
-                )
-        
         self.backbone = backbone
         self.aux_loss = aux_loss
         self.with_box_refine = with_box_refine
@@ -123,19 +116,9 @@ class vidt(nn.Module):
             self.transformer.decoder.class_embed = self.class_embed
             for box_embed in self.bbox_embed:
                 nn.init.constant_(box_embed.layers[-1].bias.data[2:], 0.0)
-        
-        self._init_det_tokens_proj()
 
-    def _init_det_tokens_proj(self):
-        def _init_weights(m):
-            if isinstance(m, nn.Linear):
-                trunc_normal_(m.weight, std=.02)
-                if isinstance(m, nn.Linear) and m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.LayerNorm):
-                nn.init.constant_(m.bias, 0)
-                nn.init.constant_(m.weight, 1.0)
-        self.det_tokens_proj.apply(_init_weights)
+        if args.no_input_proj:
+            self.input_proj = nn.ModuleList([nn.Identity() for _ in range(len(self.input_proj))])
 
     def forward(self, samples: NestedTensor):
         """ The forward expects a NestedTensor, which consists of:
@@ -154,7 +137,7 @@ class vidt(nn.Module):
         """
         if not isinstance(samples, NestedTensor):
             samples = nested_tensor_from_tensor_list(samples)
-        features, pos, det_tokens = self.backbone(samples)
+        features, pos = self.backbone(samples)
 
         srcs = []
         masks = []
@@ -176,12 +159,10 @@ class vidt(nn.Module):
                 srcs.append(src)
                 masks.append(mask)
                 pos.append(pos_l)
-        # det_tokens = self.det_tokens_proj[0](det_tokens)
-        det_tokens = self.det_tokens_proj(det_tokens)
+
         query_embeds = None
-        # if not self.two_stage:
-        #     query_embeds = self.query_embed.weight
-        query_embeds = det_tokens
+        if not self.two_stage:
+            query_embeds = self.query_embed.weight
         hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact = self.transformer(srcs, masks, pos, query_embeds)
 
         outputs_classes = []
@@ -478,18 +459,16 @@ def build(args):
         num_classes = 20
     num_classes += 1
     device = torch.device(args.device)
-    logger.info(f"build swin backbone with ram {args.vit_backbone}")
-    # backbone = build_swin_backbone_with_ram(args)
+    logger.info(f"building vit backbone {args.vit_backbone}")
+    # backbone = build_swin_backbone(args)
     backbone = build_backbone(args)
     if args.enc_layers == 0:
         logger.info("build tranformer neck without encoder")
         transformer = build_deforamble_transformer_wo_encoder(args)
     else:
-        logger.error("vidt doesn't support neck encoder currently")
-        raise ValueError("vidt doesn't support neck encoder currently")
-        logger.info("\n build tranformer neck wit encoder \n")
-        transformer = build_deforamble_transformer(args) # TODO, vidt now doesn't support encoder layer now
-    model = vidt(
+        logger.info("build tranformer neck with encoder")
+        transformer = build_deforamble_transformer(args)
+    model = DeformableDETR(
         backbone,
         transformer,
         num_classes=num_classes,
@@ -498,6 +477,7 @@ def build(args):
         aux_loss=args.aux_loss,
         with_box_refine=args.with_box_refine,
         two_stage=args.two_stage,
+        args=args,
     )
     if args.masks:
         model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))

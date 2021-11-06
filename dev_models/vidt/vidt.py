@@ -14,31 +14,31 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 import math
+from dev_models import backbones
 
 from util import box_ops
 from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
                        accuracy, get_world_size, interpolate,
                        is_dist_avail_and_initialized, inverse_sigmoid)
 
-# from .backbone import build_backbone as build_swin_backbone
-from .backbone_factory import build_backbone
-from .matcher import build_matcher
-from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
+# from .backbone_ram import build_backbone as build_swin_backbone_with_ram
+from dev_models.backbone_factory import build_backbone
+from dev_models.matcher import build_matcher
+from dev_models.segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
 from .deformable_transformer import build_deforamble_transformer
-from .deformable_transformer_wo_encoder import build_deforamble_transformer_wo_encoder
 import copy
-
+from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from loguru import logger
 
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
 
-class DeformableDETR(nn.Module):
+class vidt(nn.Module):
     """ This is the Deformable DETR module that performs object detection """
     def __init__(self, backbone, transformer, num_classes, num_queries, num_feature_levels,
-                 aux_loss=True, with_box_refine=False, two_stage=False, args=None):
+                 aux_loss=True, with_box_refine=False):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -54,52 +54,69 @@ class DeformableDETR(nn.Module):
         self.num_queries = num_queries
         self.transformer = transformer
         hidden_dim = transformer.d_model
-        # Defdetr use sigmoid+bce, rather than softmax+ce, so, class_embed
-        # here is not the same as detr, refers to:
-        # https://github.com/fundamentalvision/Deformable-DETR/issues/72#issuecomment-886408142
         self.class_embed = nn.Linear(hidden_dim, num_classes)
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
-        self.num_feature_levels = num_feature_levels
-        if not two_stage:
-            self.query_embed = nn.Embedding(num_queries, hidden_dim*2)
-        if num_feature_levels > 1:
-            num_backbone_outs = len(backbone.strides)
-            input_proj_list = []
-            for _ in range(num_backbone_outs):
-                in_channels = backbone.num_channels[_]
-                input_proj_list.append(nn.Sequential(
-                    nn.Conv2d(in_channels, hidden_dim, kernel_size=1),
-                    nn.GroupNorm(32, hidden_dim),
-                ))
-            for _ in range(num_feature_levels - num_backbone_outs):
-                input_proj_list.append(nn.Sequential(
-                    nn.Conv2d(in_channels, hidden_dim, kernel_size=3, stride=2, padding=1),
-                    nn.GroupNorm(32, hidden_dim),
-                ))
-                in_channels = hidden_dim
-            self.input_proj = nn.ModuleList(input_proj_list)
-        else:
-            self.input_proj = nn.ModuleList([
-                nn.Sequential(
-                    nn.Conv2d(backbone.num_channels[0], hidden_dim, kernel_size=1),
-                    nn.GroupNorm(32, hidden_dim),
-                )])
         self.backbone = backbone
+
+        # two essential techniques used [default use]
         self.aux_loss = aux_loss
         self.with_box_refine = with_box_refine
-        self.two_stage = two_stage
 
+
+
+        # [PATCH] token channel reduction for the input to transformer decoder
+        # if cross_scale_fusion is None:
+        num_backbone_outs = len(backbone[0].num_channels)
+        input_proj_list = []
+        for _ in range(num_backbone_outs):
+            in_channels = backbone[0].num_channels[_]
+            input_proj_list.append(nn.Sequential(
+                # This is 1x1 conv -> so linear layer
+                nn.Conv2d(in_channels, hidden_dim, kernel_size=1),
+                nn.GroupNorm(32, hidden_dim),
+            ))
+        self.input_proj = nn.ModuleList(input_proj_list)
+
+        # initialize the projection layer for [PATCH] tokens
+        for proj in self.input_proj:
+            nn.init.xavier_uniform_(proj[0].weight, gain=1)
+            nn.init.constant_(proj[0].bias, 0)
+        self.fusion = None
+        # else:
+        #     # the cross scale fusion module has its own reduction layers
+        #     self.fusion = cross_scale_fusion
+
+        # channel dim reduction for [DET] tokens
+        self.tgt_proj = nn.Sequential(
+              # This is 1x1 conv -> so linear layer
+              nn.Conv2d(self.backbone[0].num_channels[-2], hidden_dim, kernel_size=1),
+              nn.GroupNorm(32, hidden_dim),
+            )
+
+        # channel dim reductionfor [DET] learnable pos encodings
+        self.query_pos_proj = nn.Sequential(
+              # This is 1x1 conv -> so linear layer
+              nn.Conv2d(hidden_dim, hidden_dim, kernel_size=1),
+              nn.GroupNorm(32, hidden_dim),
+            )
+
+        # initialize detection head: box regression and classification
         prior_prob = 0.01
         bias_value = -math.log((1 - prior_prob) / prior_prob)
         self.class_embed.bias.data = torch.ones(num_classes) * bias_value
         nn.init.constant_(self.bbox_embed.layers[-1].weight.data, 0)
         nn.init.constant_(self.bbox_embed.layers[-1].bias.data, 0)
-        for proj in self.input_proj:
-            nn.init.xavier_uniform_(proj[0].weight, gain=1)
-            nn.init.constant_(proj[0].bias, 0)
 
-        # if two-stage, the last class_embed and bbox_embed is for region proposal generation
-        num_pred = (transformer.decoder.num_layers + 1) if two_stage else transformer.decoder.num_layers
+        # initialize projection layer for [DET] tokens and encodings
+        nn.init.xavier_uniform_(self.tgt_proj[0].weight, gain=1)
+        nn.init.constant_(self.tgt_proj[0].bias, 0)
+        nn.init.xavier_uniform_(self.query_pos_proj[0].weight, gain=1)
+        nn.init.constant_(self.query_pos_proj[0].bias, 0)
+
+        # the prediction is made for each decoding layers + the standalone detector (Swin with RAM)
+        num_pred = transformer.decoder.num_layers + 1
+
+        # set up all required nn.Module for additional techniques
         if with_box_refine:
             self.class_embed = _get_clones(self.class_embed, num_pred)
             self.bbox_embed = _get_clones(self.bbox_embed, num_pred)
@@ -111,88 +128,100 @@ class DeformableDETR(nn.Module):
             self.class_embed = nn.ModuleList([self.class_embed for _ in range(num_pred)])
             self.bbox_embed = nn.ModuleList([self.bbox_embed for _ in range(num_pred)])
             self.transformer.decoder.bbox_embed = None
-        if two_stage:
-            # hack implementation for two-stage
-            self.transformer.decoder.class_embed = self.class_embed
-            for box_embed in self.bbox_embed:
-                nn.init.constant_(box_embed.layers[-1].bias.data[2:], 0.0)
 
-        if args.no_input_proj:
-            self.input_proj = nn.ModuleList([nn.Identity() for _ in range(len(self.input_proj))])
+
 
     def forward(self, samples: NestedTensor):
-        """ The forward expects a NestedTensor, which consists of:
-               - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
-               - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
-
-            It returns a dict with the following elements:
-               - "pred_logits": the classification logits (including no-object) for all queries.
-                                Shape= [batch_size x num_queries x (num_classes + 1)]
-               - "pred_boxes": The normalized boxes coordinates for all queries, represented as
-                               (center_x, center_y, height, width). These values are normalized in [0, 1],
-                               relative to the size of each individual image (disregarding possible padding).
-                               See PostProcess for information on how to retrieve the unnormalized bounding box.
-               - "aux_outputs": Optional, only returned when auxilary losses are activated. It is a list of
-                                dictionnaries containing the two above keys for each decoder layer.
+        """ The forward step of ViDT
+        Parameters:
+            The forward expects a NestedTensor, which consists of:
+            - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
+            - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
+        Returns:
+            A dictionary having the key and value pairs below:
+            - "pred_logits": the classification logits (including no-object) for all queries.
+                            Shape= [batch_size x num_queries x (num_classes + 1)]
+            - "pred_boxes": The normalized boxes coordinates for all queries, represented as
+                           (center_x, center_y, height, width). These values are normalized in [0, 1],
+                           relative to the size of each individual image (disregarding possible padding).
+                           See PostProcess for information on how to retrieve the unnormalized bounding box.
+            - "aux_outputs": Optional, only returned when auxilary losses are activated. It is a list of
+                            dictionnaries containing the two above keys for each decoder layer.
+                            If iou_aware is True, "pred_ious" is also returns as one of the key in "aux_outputs"
+            - "enc_tokens": If token_label is True, "enc_tokens" is returned to be used
+            Note that aux_loss and box refinement is used in ViDT in default. The detailed ablation of using
+            the cross_scale_fusion, iou_aware & token_lablel loss will be discussed in a later version
         """
-        if not isinstance(samples, NestedTensor):
+        if isinstance(samples, (list, torch.Tensor)):
             samples = nested_tensor_from_tensor_list(samples)
-        features, pos = self.backbone(samples)
+
+        x = samples.tensors # RGB input
+        mask = samples.mask # padding mask
+
+        # return multi-scale [PATCH] tokens along with final [DET] tokens and their pos encodings
+        features, det_tgt, det_pos = self.backbone[0](x, mask)
+
+        # [DET] token and encoding projection to compact representation for the input to the Neck-free transformer
+        det_tgt = self.tgt_proj(det_tgt.unsqueeze(-1)).squeeze(-1).permute(0, 2, 1)
+        det_pos = self.query_pos_proj(det_pos.unsqueeze(-1)).squeeze(-1).permute(0, 2, 1)
+
+        # [PATCH] token projection
+        shapes = []
+        for l, src in enumerate(features):
+            shapes.append(src.shape[-2:])
 
         srcs = []
-        masks = []
-        for l, feat in enumerate(features):
-            src, mask = feat.decompose()
-            srcs.append(self.input_proj[l](src))
-            masks.append(mask)
-            assert mask is not None
-        if self.num_feature_levels > len(srcs):
-            _len_srcs = len(srcs)
-            for l in range(_len_srcs, self.num_feature_levels):
-                if l == _len_srcs:
-                    src = self.input_proj[l](features[-1].tensors)
-                else:
-                    src = self.input_proj[l](srcs[-1])
-                m = samples.mask
-                mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
-                pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)
-                srcs.append(src)
-                masks.append(mask)
-                pos.append(pos_l)
+        if self.fusion is None:
+            for l, src in enumerate(features):
+                srcs.append(self.input_proj[l](src))
+        else:
+            # multi-scale fusion is used if fusion is not None
+            srcs = self.fusion(features)
 
-        query_embeds = None
-        if not self.two_stage:
-            query_embeds = self.query_embed.weight
-        hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact = self.transformer(srcs, masks, pos, query_embeds)
+        masks = []
+        for l, src in enumerate(srcs):
+            # resize mask
+            shapes.append(src.shape[-2:])
+            _mask = F.interpolate(mask[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
+            masks.append(_mask)
+            assert mask is not None
 
         outputs_classes = []
         outputs_coords = []
+
+        # return the output of the neck-free decoder
+        hs, init_reference, inter_references, enc_token_class_unflat = \
+          self.transformer(srcs, masks, det_tgt, det_pos)
+
+        # perform predictions via the detection head
         for lvl in range(hs.shape[0]):
-            if lvl == 0:
-                reference = init_reference
-            else:
-                reference = inter_references[lvl - 1]
+            reference = init_reference if lvl == 0 else inter_references[lvl - 1]
             reference = inverse_sigmoid(reference)
+
             outputs_class = self.class_embed[lvl](hs[lvl])
+            ## bbox output + reference
             tmp = self.bbox_embed[lvl](hs[lvl])
             if reference.shape[-1] == 4:
                 tmp += reference
             else:
                 assert reference.shape[-1] == 2
                 tmp[..., :2] += reference
+
             outputs_coord = tmp.sigmoid()
             outputs_classes.append(outputs_class)
             outputs_coords.append(outputs_coord)
+
+        # stack all predictions made from each decoding layers
         outputs_class = torch.stack(outputs_classes)
         outputs_coord = torch.stack(outputs_coords)
 
+        # final prediction is made the last decoding layer
         out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
-        if self.aux_loss:
+
+        # aux loss is defined by using the rest predictions
+        if self.aux_loss and self.transformer.decoder.num_layers > 0:
             out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
 
-        if self.two_stage:
-            enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
-            out['enc_outputs'] = {'pred_logits': enc_outputs_class, 'pred_boxes': enc_outputs_coord}
         return out
 
     @torch.jit.unused
@@ -459,16 +488,18 @@ def build(args):
         num_classes = 20
     num_classes += 1
     device = torch.device(args.device)
-    logger.info(f"building vit backbone {args.vit_backbone}")
-    # backbone = build_swin_backbone(args)
+    logger.info(f"build swin backbone with ram {args.vit_backbone}")
+    # backbone = build_swin_backbone_with_ram(args)
     backbone = build_backbone(args)
-    if args.enc_layers == 0:
-        logger.info("build tranformer neck without encoder")
-        transformer = build_deforamble_transformer_wo_encoder(args)
-    else:
-        logger.info("build tranformer neck with encoder")
-        transformer = build_deforamble_transformer(args)
-    model = DeformableDETR(
+    # if args.enc_layers == 0:
+    #     logger.info("build tranformer neck without encoder")
+    #     transformer = build_deforamble_transformer_wo_encoder(args)
+    # else:
+    #     logger.error("vidt doesn't support neck encoder currently")
+    #     raise ValueError("vidt doesn't support neck encoder currently")
+    #     logger.info("\n build tranformer neck wit encoder \n")
+    transformer = build_deforamble_transformer(args) 
+    model = vidt(
         backbone,
         transformer,
         num_classes=num_classes,
@@ -477,7 +508,6 @@ def build(args):
         aux_loss=args.aux_loss,
         with_box_refine=args.with_box_refine,
         two_stage=args.two_stage,
-        args=args,
     )
     if args.masks:
         model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))

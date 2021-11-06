@@ -183,7 +183,8 @@ def get_args_parser():
 
     # extra exp
     parser.add_argument('--no_input_proj', action='store_true')
-
+    # vidt param
+    parser.add_argument('--cross_indices', default=[3], nargs='+', type=int, help='stage ids for [DET x PATCH] cross-attention')
     return parser
 
 
@@ -285,6 +286,11 @@ def main(args):
     for n, p in model_without_ddp.named_parameters():
         logger.info(n)
 
+    import pdb;pdb.set_trace()
+    # set param dicts
+    if hasattr(model_without_ddp.backbone[0], 'no_weight_decay'):
+        skip = model_without_ddp.backbone[0].no_weight_decay()
+    
     param_dicts = [
         {
             "params":
