@@ -292,7 +292,6 @@ def main(args):
     for n, p in model_without_ddp.named_parameters():
         logger.info(n)
 
-    import pdb;pdb.set_trace()
     # set param dicts
     if hasattr(model_without_ddp.backbone[0], 'no_weight_decay'):
         no_weight_decay_names = model_without_ddp.backbone[0].no_weight_decay()
@@ -308,7 +307,6 @@ def main(args):
                 else:
                     backbone_decay.append(param)
                     backbone_decay_names.append(name)
-        import pdb;pdb.set_trace()
         param_dicts = [
             {
                 "params":
