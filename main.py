@@ -51,6 +51,12 @@ def get_args_parser():
                         help='gradient clipping max norm')
 
     # set cosine scheduler
+    parser.add_argument('--lr-noise', type=float, nargs='+', default=None, metavar='pct, pct',
+                         help='learning rate noise on/off epoch percentages')
+    parser.add_argument('--lr-noise-pct', type=float, default=0.67, metavar='PERCENT',
+                         help='learning rate noise limit percent (default: 0.67)')
+    parser.add_argument('--lr-noise-std', type=float, default=1.0, metavar='STDDEV',
+                         help='learning rate noise std-dev (default: 1.0)')
     parser.add_argument('--warmup-lr', type=float, default=1e-6, metavar='LR',
                         help='warmup learning rate (default: 1e-6)')
     parser.add_argument('--min-lr', type=float, default=1e-7, metavar='LR',
@@ -289,24 +295,58 @@ def main(args):
     import pdb;pdb.set_trace()
     # set param dicts
     if hasattr(model_without_ddp.backbone[0], 'no_weight_decay'):
-        skip = model_without_ddp.backbone[0].no_weight_decay()
-    
-    param_dicts = [
-        {
-            "params":
-                [p for n, p in model_without_ddp.named_parameters()
-                 if not match_name_keywords(n, args.lr_backbone_names) and not match_name_keywords(n, args.lr_linear_proj_names) and p.requires_grad],
-            "lr": args.lr,
-        },
-        {
-            "params": [p for n, p in model_without_ddp.named_parameters() if match_name_keywords(n, args.lr_backbone_names) and p.requires_grad],
-            "lr": args.lr_backbone,
-        },
-        {
-            "params": [p for n, p in model_without_ddp.named_parameters() if match_name_keywords(n, args.lr_linear_proj_names) and p.requires_grad],
-            "lr": args.lr * args.lr_linear_proj_mult,
-        }
-    ]
+        no_weight_decay_names = model_without_ddp.backbone[0].no_weight_decay()
+        backbone_no_decay = []
+        backbone_decay = []
+        backbone_no_decay_names = []
+        backbone_decay_names = []
+        for name, param in model_without_ddp.named_parameters():
+            if match_name_keywords(name, args.lr_backbone_names) and param.requires_grad:
+                if len(param.shape) == 1 or name.endswith(".bias") or name.split('.')[-1] in no_weight_decay_names:
+                    backbone_no_decay.append(param)
+                    backbone_no_decay_names.append(name)
+                else:
+                    backbone_decay.append(param)
+                    backbone_decay_names.append(name)
+        import pdb;pdb.set_trace()
+        param_dicts = [
+            {
+                "params":
+                    [p for n, p in model_without_ddp.named_parameters()
+                    if not match_name_keywords(n, args.lr_backbone_names) and not match_name_keywords(n, args.lr_linear_proj_names) and p.requires_grad],
+                "lr": args.lr,
+            },
+            {
+                "params": backbone_decay,
+                "lr": args.lr_backbone,
+            },
+            {
+                "params": backbone_no_decay,
+                "weight_decay": 0.,
+                "lr": args.lr_backbone,
+            },
+            {
+                "params": [p for n, p in model_without_ddp.named_parameters() if match_name_keywords(n, args.lr_linear_proj_names) and p.requires_grad],
+                "lr": args.lr * args.lr_linear_proj_mult,
+            }
+        ]
+    else:
+        param_dicts = [
+            {
+                "params":
+                    [p for n, p in model_without_ddp.named_parameters()
+                    if not match_name_keywords(n, args.lr_backbone_names) and not match_name_keywords(n, args.lr_linear_proj_names) and p.requires_grad],
+                "lr": args.lr,
+            },
+            {
+                "params": [p for n, p in model_without_ddp.named_parameters() if match_name_keywords(n, args.lr_backbone_names) and p.requires_grad],
+                "lr": args.lr_backbone,
+            },
+            {
+                "params": [p for n, p in model_without_ddp.named_parameters() if match_name_keywords(n, args.lr_linear_proj_names) and p.requires_grad],
+                "lr": args.lr * args.lr_linear_proj_mult,
+            }
+        ]
     if args.sgd:
         optimizer = torch.optim.SGD(param_dicts, lr=args.lr, momentum=0.9,
                                     weight_decay=args.weight_decay)

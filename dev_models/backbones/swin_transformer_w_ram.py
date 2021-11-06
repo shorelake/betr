@@ -299,9 +299,7 @@ class SwinTransformerBlock(nn.Module):
         self.norm1 = norm_layer(dim)
         self.attn = WindowAttention(
             dim, window_size=to_2tuple(self.window_size), num_heads=num_heads,
-            qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop, 
-            activate_cross_attn=activate_cross_attn, activate_self_attn=activate_self_attn,
-            det_token_num=det_token_num)
+            qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
 
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)
@@ -810,6 +808,10 @@ class SwinTransformerWithRAM(nn.Module):
         if method == 'vidt_wo_neck':
             self.layers[-1].downsample = None
 
+    @torch.jit.ignore
+    def no_weight_decay(self):
+        return ['det_pos_embed', 'det_token']
+
     def _freeze_stages(self):
         if self.frozen_stages >= 0:
             self.patch_embed.eval()
@@ -1044,6 +1046,7 @@ def build_backbone(args):
                           pos_dim=args.hidden_dim,
                           cross_indices=args.cross_indices)
     backbone.init_weights(args.pretrained_path)
+    backbone.strides = [8, 16, 32, 64]
     model = Joiner(backbone, position_embedding)
     return model
 

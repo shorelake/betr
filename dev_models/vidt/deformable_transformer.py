@@ -18,7 +18,7 @@ from torch import nn
 from torch.nn.init import xavier_uniform_, constant_, normal_
 
 from util.misc import inverse_sigmoid
-from ops.modules import MSDeformAttn
+from models.ops.modules import MSDeformAttn
 
 from timm.models.layers import DropPath
 
