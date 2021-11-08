@@ -37,7 +37,7 @@ def _get_clones(module, N):
 class vidt(nn.Module):
     """ This is the Deformable DETR module that performs object detection """
     def __init__(self, backbone, transformer, num_classes, num_queries, num_feature_levels,
-                 aux_loss=True, with_box_refine=False):
+                 aux_loss=True, with_box_refine=False, args=None):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -127,6 +127,11 @@ class vidt(nn.Module):
             self.class_embed = nn.ModuleList([self.class_embed for _ in range(num_pred)])
             self.bbox_embed = nn.ModuleList([self.bbox_embed for _ in range(num_pred)])
             self.transformer.decoder.bbox_embed = None
+        self.no_input_proj = args.no_input_proj
+        if args.no_input_proj:
+            self.input_proj = nn.ModuleList([nn.Identity() for _ in range(len(self.input_proj))])
+            self.tgt_proj = nn.Identity()
+            self.query_pos_proj = nn.Identity()
 
 
 
@@ -153,37 +158,62 @@ class vidt(nn.Module):
         """
         if isinstance(samples, (list, torch.Tensor)):
             samples = nested_tensor_from_tensor_list(samples)
+        if not self.no_input_proj:
+            # follow vidt
+            x = samples.tensors # RGB input
+            mask = samples.mask # padding mask
 
-        x = samples.tensors # RGB input
-        mask = samples.mask # padding mask
+            # return multi-scale [PATCH] tokens along with final [DET] tokens and their pos encodings
+            features, det_tgt, det_pos = self.backbone[0](x, mask)
+            # [DET] token and encoding projection to compact representation for the input to the Neck-free transformer
+            det_tgt = self.tgt_proj(det_tgt.unsqueeze(-1)).squeeze(-1).permute(0, 2, 1)
+            det_pos = self.query_pos_proj(det_pos.unsqueeze(-1)).squeeze(-1).permute(0, 2, 1)
 
-        # return multi-scale [PATCH] tokens along with final [DET] tokens and their pos encodings
-        features, det_tgt, det_pos = self.backbone[0](x, mask)
-
-        # [DET] token and encoding projection to compact representation for the input to the Neck-free transformer
-        det_tgt = self.tgt_proj(det_tgt.unsqueeze(-1)).squeeze(-1).permute(0, 2, 1)
-        det_pos = self.query_pos_proj(det_pos.unsqueeze(-1)).squeeze(-1).permute(0, 2, 1)
-
-        # [PATCH] token projection
-        shapes = []
-        for l, src in enumerate(features):
-            shapes.append(src.shape[-2:])
-
-        srcs = []
-        if self.fusion is None:
+            # [PATCH] token projection
+            shapes = []
             for l, src in enumerate(features):
-                srcs.append(self.input_proj[l](src))
-        else:
-            # multi-scale fusion is used if fusion is not None
-            srcs = self.fusion(features)
+                shapes.append(src.shape[-2:])
 
-        masks = []
-        for l, src in enumerate(srcs):
-            # resize mask
-            shapes.append(src.shape[-2:])
-            _mask = F.interpolate(mask[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
-            masks.append(_mask)
-            assert mask is not None
+            srcs = []
+            if self.fusion is None:
+                for l, src in enumerate(features):
+                    srcs.append(self.input_proj[l](src))
+            else:
+                # multi-scale fusion is used if fusion is not None
+                srcs = self.fusion(features)
+
+            masks = []
+            for l, src in enumerate(srcs):
+                # resize mask
+                shapes.append(src.shape[-2:])
+                _mask = F.interpolate(mask[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
+                masks.append(_mask)
+                assert mask is not None
+        else:
+            # use d2detr and yolos fuse
+            features, _, det_tgt, det_pos = self.backbone(samples)
+            srcs = []
+            masks = []
+            for l, feat in enumerate(features):
+                src, mask = feat.decompose()
+                srcs.append(self.input_proj[l](src))
+                masks.append(mask)
+                assert mask is not None
+            # if self.num_feature_levels > len(srcs):
+            #     _len_srcs = len(srcs)
+            #     for l in range(_len_srcs, self.num_feature_levels):
+            #         if l == _len_srcs:
+            #             src = self.input_proj[l](features[-1].tensors)
+            #         else:
+            #             src = self.input_proj[l](srcs[-1])
+            #         m = samples.mask
+            #         mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
+            #         srcs.append(src)
+            #         masks.append(mask)
+            det_tgt = self.tgt_proj(det_tgt)
+            det_pos = self.query_pos_proj(det_pos)
+
+
 
         outputs_classes = []
         outputs_coords = []
@@ -487,7 +517,7 @@ def build(args):
         num_classes = 20
     num_classes += 1
     device = torch.device(args.device)
-    logger.info(f"build swin backbone with ram {args.vit_backbone}")
+    logger.info(f"build swin backbone {args.vit_backbone}")
     # backbone = build_swin_backbone_with_ram(args)
     backbone = build_backbone(args)
     # if args.enc_layers == 0:
@@ -506,6 +536,7 @@ def build(args):
         num_feature_levels=args.num_feature_levels,
         aux_loss=args.aux_loss,
         with_box_refine=args.with_box_refine,
+        args=args
     )
     if args.masks:
         model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))
