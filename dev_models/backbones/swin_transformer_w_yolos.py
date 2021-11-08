@@ -15,7 +15,7 @@ import math
 
 from util.misc import NestedTensor
 from typing import Dict, List
-from dev_models.backbone import build_position_encoding, Joiner
+from dev_models.backbone import build_position_encoding
 from loguru import logger
 __all__ = ['swin_nano_yolos', 'swin_tiny_yolos', 'swin_small_yolos', 'swin_base_yolos']
 
@@ -575,10 +575,20 @@ class PvtAttention(nn.Module):
             if m.bias is not None:
                 m.bias.data.zero_()
 
-    def forward(self, x, H, W):
+    def forward(self, x, H, W, det_tokens=None):
+        Q = []
+        # for x
         B, N, C = x.shape
         q = self.q(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        Q.append(q)
+        # for det_tokens
+        det_B, det_N, det_C = det_tokens.shape
+        det_q = self.q(det_tokens).reshape(det_B, det_N, self.num_heads, det_C // self.num_heads).permute(0,2,1,3)
+        Q.append(det_q)
 
+        K = []
+        V = []
+        # for x
         if not self.linear:
             if self.sr_ratio > 1:
                 x_ = x.permute(0, 2, 1).reshape(B, C, H, W).contiguous()
@@ -594,16 +604,43 @@ class PvtAttention(nn.Module):
             x_ = self.act(x_)
             kv = self.kv(x_).reshape(B, -1, 2, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         k, v = kv[0], kv[1]
+        K.append(k)
+        V.append(v)
 
-        attn = (q @ k.transpose(-2, -1)) * self.scale
+        # for det_tokens
+        # for det_tokens
+        if self.linear:
+            after_act_det_tokens = self.act(det_tokens)
+        det_kv = self.kv(det_tokens).reshape(det_B, -1, 2, self.num_heads, det_C // self.num_heads).permute(2,0,3,1,4)
+        det_k, det_v = det_kv[0], det_kv[1]
+        K.append(det_k)
+        V.append(det_v)
+
+        Q = torch.cat(Q, dim=2)
+        K = torch.cat(K, dim=2)
+        V = torch.cat(V, dim=2)
+
+        attn = (Q @ K.transpose(-2, -1)) * self.scale
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
 
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-        x = self.proj(x)
-        x = self.proj_drop(x)
+        X = (attn @ V).transpose(1, 2).reshape(B, -1, C)
+        X = self.proj(X)
+        X = self.proj_drop(X)
 
-        return x
+        scale_out, det_tokens = X[:, :-det_N, :], X[:, -det_N:, :]
+
+        return scale_out, det_tokens
+
+        # attn = (q @ k.transpose(-2, -1)) * self.scale
+        # attn = attn.softmax(dim=-1)
+        # attn = self.attn_drop(attn)
+
+        # x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        # x = self.proj(x)
+        # x = self.proj_drop(x)
+
+        # return x
 
 class FuseAttention(nn.Module):
     def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0., sr_ratio=1, linear=False, poolsize=7):
@@ -649,15 +686,22 @@ class FuseAttention(nn.Module):
             if m.bias is not None:
                 m.bias.data.zero_()
 
-    def forward(self, out, shapes):
+    def forward(self, out, shapes, det_tokens=None):
         Q = []
+        # for scale
         for x in out:
             B, N, C = x.shape
             q = self.q(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
             Q.append(q)
 
+        # for det_tokens
+        det_B, det_N, det_C = det_tokens.shape
+        det_q = self.q(det_tokens).reshape(det_B, det_N, self.num_heads, det_C // self.num_heads).permute(0, 2, 1, 3)
+        Q.append(det_q)
+
         K = []
         V = []
+        # for scale
         assert len(out) == len(shapes) == len(self.sr) == len(self.norm)
         for x, shape, sr, norm in zip(out, shapes, self.sr, self.norm):
             H, W = shape
@@ -673,6 +717,14 @@ class FuseAttention(nn.Module):
             K.append(k)
             V.append(v)
 
+        # for det_tokens
+        if self.linear:
+            after_act_det_tokens = self.act(det_tokens)
+        det_kv = self.kv(det_tokens).reshape(det_B, -1, 2, self.num_heads, det_C // self.num_heads).permute(2,0,3,1,4)
+        det_k, det_v = det_kv[0], det_kv[1]
+        K.append(det_k)
+        V.append(det_v)
+
         Q = torch.cat(Q, dim=2)
         K = torch.cat(K, dim=2)
         V = torch.cat(V, dim=2)
@@ -685,17 +737,26 @@ class FuseAttention(nn.Module):
         X = self.proj(X)
         X = self.proj_drop(X)
 
-        return X
+        scale_out, det_tokens = X[:, :-det_N, :], X[:, -det_N:, :]
 
-    def forward_extra(self, out_q, shapes_q, out_kv, shapes_kv):
+        return scale_out, det_tokens
+
+    def forward_extra(self, out_q, shapes_q, out_kv, shapes_kv, det_tokens=None):
         Q = []
+        # for query scale
         for x in out_q:
             B, N, C = x.shape
             q = self.q(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
             Q.append(q)
+        
+        # for query det_tokens
+        det_B, det_N, det_C = det_tokens.shape
+        det_q = self.q(det_tokens).reshape(det_B, det_N, self.num_heads, det_C // self.num_heads).permute(0,2,1,3)
+        Q.append(det_q)
 
         K = []
         V = []
+        # for kv scale
         assert len(out_kv) == len(shapes_kv) == len(self.sr) == len(self.norm)
         for x, shape, sr, norm in zip(out_kv, shapes_kv, self.sr, self.norm):
             H, W = shape
@@ -710,6 +771,15 @@ class FuseAttention(nn.Module):
             k, v = kv[0], kv[1]
             K.append(k)
             V.append(v)
+        
+        # for kv det_tokens
+        if self.linear:
+            after_act_det_tokens = self.act(det_tokens)
+        det_kv = self.kv(after_act_det_tokens).reshape(det_B, -1, 2, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        det_k, det_v = det_kv[0], det_kv[1]
+        K.append(det_k)
+        V.append(det_v)
+
 
         Q = torch.cat(Q, dim=2)
         K = torch.cat(K, dim=2)
@@ -723,7 +793,9 @@ class FuseAttention(nn.Module):
         X = self.proj(X)
         X = self.proj_drop(X)
 
-        return X
+        scale_out, det_tokens = X[:, :-det_N, :], X[:, -det_N:, :]
+
+        return scale_out, det_tokens
 
 
 
@@ -776,38 +848,61 @@ class FuseBlock(nn.Module):
                 sizes = [H * W for H, W in shapes]
                 
                 x = self.norm1(x)
+                det_tokens = self.norm1(det_tokens)
 
                 q = list(x.split(sizes, dim=1))
                 q_shapes = list(shapes)
                 kv = extra_kv + q
                 kv_shapes = extra_kv_shapes + q_shapes
-                x = x + self.drop_path(self.attn.forward_extra(q, q_shapes, kv, kv_shapes))
+
+                after_attn_q, after_attn_det_tokens = self.attn.forward_extra(q, q_shapes, kv, kv_shapes, det_tokens=det_tokens)
+                # for x
+                x = x + self.drop_path(after_attn_q)
 
                 x = self.norm2(x)
 
-                x = [self.mlp(x_, H, W) for x_, (H, W) in zip(x.split(sizes, dim=1), shapes)]
-                x = torch.cat(x, dim=1)
+                shortcut_x = [self.mlp(x_, H, W) for x_, (H, W) in zip(x.split(sizes, dim=1), shapes)]
+                shortcut_x = torch.cat(shortcut_x, dim=1)
 
-                x = x + self.drop_path(x)
+                x = x + self.drop_path(shortcut_x)
+
+                # for det_tokens
+                det_tokens = det_tokens + self.drop_path(after_attn_det_tokens)
+                det_tokens = self.norm2(det_tokens)
+                det_tokens = det_tokens + self.drop_path(self.det_mlp(det_tokens)) # TODO?
+
 
             else:
                 sizes = [H * W for H, W in shapes]
                 
                 x = self.norm1(x)
+                det_tokens = self.norm1(det_tokens)
 
-                x = x + self.drop_path(self.attn(x.split(sizes, dim=1), shapes))
+                after_attn_x, after_attn_det_tokens = self.attn(x.split(sizes, dim=1), shapes, det_tokens=det_tokens)
+                # for x
+                x = x + self.drop_path(after_attn_x)
 
                 x = self.norm2(x)
 
-                x = [self.mlp(x_, H, W) for x_, (H, W) in zip(x.split(sizes, dim=1), shapes)]
-                x = torch.cat(x, dim=1)
+                shortcut_x = [self.mlp(x_, H, W) for x_, (H, W) in zip(x.split(sizes, dim=1), shapes)]
+                shortcut_x = torch.cat(shortcut_x, dim=1)
 
-                x = x + self.drop_path(x)
+                x = x + self.drop_path(shortcut_x)
+
+                # for det_tokens
+                det_tokens = det_tokens + self.drop_path(after_attn_det_tokens)
+                det_tokens = self.norm2(det_tokens)
+                det_tokens = det_tokens + self.drop_path(self.det_mlp(det_tokens)) # TODO?
         else:
-            x = x + self.drop_path(self.attn(self.norm1(x), H, W))
+            after_attn_x, after_attn_det_tokens = self.attn(self.norm1(x), H, W, det_tokens=self.norm1(det_tokens))
+            # for x
+            x = x + self.drop_path(after_attn_x)
             x = x + self.drop_path(self.mlp(self.norm2(x), H, W))
+            # for det_tokens
+            det_tokens = det_tokens + self.drop_path(after_attn_det_tokens)
+            det_tokens = det_tokens + self.drop_path(self.det_mlp(self.norm2(det_tokens))) 
 
-        return x
+        return x, det_tokens
 
 
 class SwinTransformer(nn.Module):
@@ -862,7 +957,9 @@ class SwinTransformer(nn.Module):
                  fuse_dim=256, 
                  fuse_num_heads=8, fuse_mlp_ratios=4, fuse_depth=3, fuse_linear=False, 
                  fuse_start_lvl=1, fuse_num_addition=1,
-                 fuse_dense_lookback=False, fuse_lookback_extra_depth=1, fuse_single_scale=False
+                 fuse_dense_lookback=False, fuse_lookback_extra_depth=1, fuse_single_scale=False,
+                 # yolos det token param
+                 det_token_num=100
                 ):
         super().__init__()
 
@@ -924,7 +1021,8 @@ class SwinTransformer(nn.Module):
                                        fuse_depth=fuse_depth, fuse_linear=fuse_linear, 
                                        fuse_start_lvl=fuse_start_lvl, fuse_num_addition=fuse_num_addition,
                                        fuse_dense_lookback=fuse_dense_lookback, fuse_lookback_extra_depth=fuse_lookback_extra_depth, 
-                                       fuse_single_scale=fuse_single_scale)
+                                       fuse_single_scale=fuse_single_scale,
+                                       det_token_num=det_token_num)
 
         # # add a norm layer for each output
         # for i_layer in out_indices:
@@ -937,17 +1035,19 @@ class SwinTransformer(nn.Module):
     def _apply_cross_scale_fusion(self, drop_path_rate=0.2, attn_drop_rate=0.,
                                   norm_layer=nn.LayerNorm, qkv_bias=True,
                                   qk_scale=None, drop_rate=0.,
-                                  det_token_num=100,
                                   sr_ratios=[8, 4, 2, 1],
                                   fuse_dim=256, 
                                   fuse_num_heads=8, fuse_mlp_ratios=4, fuse_depth=3, 
                                   fuse_linear=False, fuse_start_lvl=1, fuse_num_addition=1,
-                                  fuse_dense_lookback=False, fuse_lookback_extra_depth=1, fuse_single_scale=False):
+                                  fuse_dense_lookback=False, fuse_lookback_extra_depth=1, fuse_single_scale=False,
+                                  det_token_num=100):
         # init det tokens
         self.fuse_det_tokens = nn.Parameter(torch.zeros(1, det_token_num, fuse_dim))
         self.fuse_det_tokens = trunc_normal_(self.fuse_det_tokens, std=.02)
-        self.fuse_det_pos_embed = nn.Parameter(torch.zeros(1, det_token_num, fuse_dim))
-        self.fuse_det_pos_embed = trunc_normal_(self.fuse_det_pos_embed, std=.02)
+        # learnable positional encoding for detection tokens
+        det_pos_embed = torch.zeros(1, det_token_num, fuse_dim)
+        det_pos_embed = trunc_normal_(det_pos_embed, std=.02)
+        self.fuse_det_pos_embed = nn.Parameter(det_pos_embed)
 
         # init CECA
         self.fuse_dense_lookback = fuse_dense_lookback
@@ -986,7 +1086,9 @@ class SwinTransformer(nn.Module):
                 drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer,
                 sr_ratio=srr, linear=fuse_linear, fuse=True, fuse_extra=fuse_dense_lookback)
                 for i in range(fuse_depth_per_scale[k])])
-
+            # for det_tokens
+            for blk in fuse_block:
+                blk.det_mlp = Mlp(in_features=fuse_dim, hidden_features=fuse_dim, drop=drop_rate)
             fuse_norm = nn.LayerNorm(fuse_dim)
 
             self.add_module(f'fuse_layer{k+2}', fuse_block)
@@ -998,7 +1100,9 @@ class SwinTransformer(nn.Module):
                 drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[0], norm_layer=norm_layer,
                 sr_ratio=sr_ratios[fuse_start_lvl], linear=fuse_linear)
                 for i in range(fuse_lookback_extra_depth)])
-
+            # for det_tokens
+            for blk in fuse_block:
+                blk.det_mlp = Mlp(in_features=fuse_dim, hidden_features=fuse_dim, drop=drop_rate)
             fuse_norm = nn.LayerNorm(fuse_dim)
             logger.info('lookback srr:', fuse_block[0].sr_ratio)
 
@@ -1066,7 +1170,8 @@ class SwinTransformer(nn.Module):
 
         B, _, _ = x.shape
         det_tokens = self.fuse_det_tokens.expand(B,-1,-1)
-        det_tokens = det_tokens + self.fuse_det_pos_embed
+        det_pos = self.fuse_det_pos_embed
+        det_tokens = det_tokens + det_pos
         outs = []
         spatial_shapes = []
         for i in range(self.num_layers+self.fuse_num_addition):
@@ -1123,10 +1228,10 @@ class SwinTransformer(nn.Module):
                         spatial_shapes = spatial_shapes_holdout + spatial_shapes
 
         outs = [x.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous() for x, (H, W) in zip(outs, spatial_shapes)]
-        return outs
+        return outs, det_tokens, det_pos
 
     def forward(self, tensor_list: NestedTensor):
-        xs = self.forward_dense(tensor_list.tensors)
+        xs, det_tokens, det_pos = self.forward_dense(tensor_list.tensors)
         out: Dict[str, NestedTensor] = {}
         for i, x in enumerate(xs):
             if self.fuse_single_scale and i < len(xs) - 1: continue
@@ -1135,7 +1240,7 @@ class SwinTransformer(nn.Module):
             assert m is not None
             mask = F.interpolate(m[None].float(), size=x.shape[-2:]).to(torch.bool)[0]
             out[name] = NestedTensor(x, mask)
-        return out
+        return out, det_tokens, det_pos
 
     def train(self, mode=True):
         """Convert the model into training mode while keep layers freezed."""
@@ -1143,7 +1248,26 @@ class SwinTransformer(nn.Module):
         self._freeze_stages()
 
 
-def swin_nano_fuse(pretrained=False, pretrained_path=None, out_indices=(1, 2, 3), **kwargs):
+class Joiner(nn.Sequential):
+    def __init__(self, backbone, position_embedding):
+        super().__init__(backbone, position_embedding)
+        self.strides = backbone.strides
+        self.num_channels = backbone.num_channels
+
+    def forward(self, tensor_list: NestedTensor):
+        xs, det_tokens, det_pos = self[0](tensor_list)
+        out: List[NestedTensor] = []
+        pos = []
+        
+        for name, x in sorted(xs.items()):
+            out.append(x)
+
+        # position encoding
+        for x in out:
+            pos.append(self[1](x).to(x.tensors.dtype))
+        return out, pos, det_tokens, det_pos
+
+def swin_nano_yolos(pretrained=False, pretrained_path=None, out_indices=(1, 2, 3), **kwargs):
     model = SwinTransformer(embed_dim=48,
                             depths=[2, 2, 6, 2],
                             num_heads=[3, 6, 12, 24],
@@ -1162,7 +1286,7 @@ def swin_nano_fuse(pretrained=False, pretrained_path=None, out_indices=(1, 2, 3)
     return model
 
 
-def swin_tiny_fuse(pretrained=False, pretrained_path=None, out_indices=(1, 2, 3), **kwargs):
+def swin_tiny_yolos(pretrained=False, pretrained_path=None, out_indices=(1, 2, 3), **kwargs):
     model = SwinTransformer(embed_dim=96,
                             depths=[2, 2, 6, 2],
                             num_heads=[3, 6, 12, 24],
@@ -1180,7 +1304,7 @@ def swin_tiny_fuse(pretrained=False, pretrained_path=None, out_indices=(1, 2, 3)
     model.init_weights(pretrained=pretrained_path)
     return model
 
-def swin_small_fuse(pretrained=False, pretrained_path=None, out_indices=(1, 2, 3), **kwargs):
+def swin_small_yolos(pretrained=False, pretrained_path=None, out_indices=(1, 2, 3), **kwargs):
     model = SwinTransformer(embed_dim=96,
                             depths=[2, 2, 18, 2],
                             num_heads=[3, 6, 12, 24],
@@ -1199,7 +1323,7 @@ def swin_small_fuse(pretrained=False, pretrained_path=None, out_indices=(1, 2, 3
     return model
 
 
-def swin_base_fuse(pretrained=False, pretrained_path=None, out_indices=(1, 2, 3), **kwargs):
+def swin_base_yolos(pretrained=False, pretrained_path=None, out_indices=(1, 2, 3), **kwargs):
     model = SwinTransformer(embed_dim=128,
                             depths=[2, 2, 18, 2],
                             num_heads=[4, 8, 16, 32],
@@ -1220,7 +1344,7 @@ def swin_base_fuse(pretrained=False, pretrained_path=None, out_indices=(1, 2, 3)
 def build_backbone(args):
     position_embedding = build_position_encoding(args)
     fuse_single_scale = args.num_feature_levels == 1
-    if args.vit_backbone == 'swin_nano_fuse':
+    if args.vit_backbone == 'swin_nano_yolos':
         logger.info(f'build backbone {args.vit_backbone}')
         backbone = SwinTransformer(embed_dim=48,
                             depths=[2, 2, 6, 2],
@@ -1241,7 +1365,9 @@ def build_backbone(args):
                             fuse_linear=True,
                             fuse_dense_lookback=True, fuse_lookback_extra_depth=0,
                             fuse_num_addition=0 if fuse_single_scale else 1,
-                            fuse_single_scale=fuse_single_scale
+                            fuse_single_scale=fuse_single_scale,
+                            # yolos det_token num
+                            det_token_num=args.num_queries
                             )
     else:
         logger.error(f"{args.vit_backbone} not supported")

@@ -785,10 +785,10 @@ class FuseBlock(nn.Module):
 
                 x = self.norm2(x)
 
-                x = [self.mlp(x_, H, W) for x_, (H, W) in zip(x.split(sizes, dim=1), shapes)]
-                x = torch.cat(x, dim=1)
+                shortcut_x = [self.mlp(x_, H, W) for x_, (H, W) in zip(x.split(sizes, dim=1), shapes)]
+                shortcut_x = torch.cat(shortcut_x, dim=1)
 
-                x = x + self.drop_path(x)
+                x = x + self.drop_path(shortcut_x)
 
             else:
                 sizes = [H * W for H, W in shapes]
@@ -799,10 +799,10 @@ class FuseBlock(nn.Module):
 
                 x = self.norm2(x)
 
-                x = [self.mlp(x_, H, W) for x_, (H, W) in zip(x.split(sizes, dim=1), shapes)]
-                x = torch.cat(x, dim=1)
+                shortcut_x = [self.mlp(x_, H, W) for x_, (H, W) in zip(x.split(sizes, dim=1), shapes)]
+                shortcut_x = torch.cat(shortcut_x, dim=1)
 
-                x = x + self.drop_path(x)
+                x = x + self.drop_path(shortcut_x)
         else:
             x = x + self.drop_path(self.attn(self.norm1(x), H, W))
             x = x + self.drop_path(self.mlp(self.norm2(x), H, W))

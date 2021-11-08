@@ -60,7 +60,7 @@ class DeformableDETR(nn.Module):
         self.class_embed = nn.Linear(hidden_dim, num_classes)
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
         self.num_feature_levels = num_feature_levels
-        if not two_stage:
+        if not two_stage and not args.init_query_from_backbone:
             self.query_embed = nn.Embedding(num_queries, hidden_dim*2)
         if num_feature_levels > 1:
             num_backbone_outs = len(backbone.strides)
@@ -120,6 +120,8 @@ class DeformableDETR(nn.Module):
         if args.no_input_proj:
             self.input_proj = nn.ModuleList([nn.Identity() for _ in range(len(self.input_proj))])
 
+        self.init_query_from_backbone = args.init_query_from_backbone
+
     def forward(self, samples: NestedTensor):
         """ The forward expects a NestedTensor, which consists of:
                - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
@@ -137,7 +139,10 @@ class DeformableDETR(nn.Module):
         """
         if not isinstance(samples, NestedTensor):
             samples = nested_tensor_from_tensor_list(samples)
-        features, pos = self.backbone(samples)
+        if not self.init_query_from_backbone:
+            features, pos = self.backbone(samples)
+        else:
+            features, pos, det_tokens, det_pos = self.backbone(samples)
 
         srcs = []
         masks = []
@@ -161,9 +166,12 @@ class DeformableDETR(nn.Module):
                 pos.append(pos_l)
 
         query_embeds = None
-        if not self.two_stage:
+        if not self.two_stage and not self.init_query_from_backbone:
             query_embeds = self.query_embed.weight
-        hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact = self.transformer(srcs, masks, pos, query_embeds)
+        if not self.init_query_from_backbone:
+            hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact = self.transformer(srcs, masks, pos, query_embeds)
+        else:
+            hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact = self.transformer(srcs, masks, pos, query_embed=det_pos, tgt=det_tokens)
 
         outputs_classes = []
         outputs_coords = []
@@ -466,6 +474,9 @@ def build(args):
         logger.info("build tranformer neck without encoder")
         transformer = build_deforamble_transformer_wo_encoder(args)
     else:
+        if args.init_query_from_backbone or 'yolos' in args.vit_backbone:
+            logger.error(f'not support with encoder for init_query_from_backbone {args.init_query_from_backbone} or vit backbone {args.vit_backbone}')
+            raise ValueError(f'not support with encoder for init_query_from_backbone {args.init_query_from_backbone} or vit backbone {args.vit_backbone}')
         logger.info("build tranformer neck with encoder")
         transformer = build_deforamble_transformer(args)
     model = DeformableDETR(

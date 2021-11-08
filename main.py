@@ -191,6 +191,9 @@ def get_args_parser():
     parser.add_argument('--no_input_proj', action='store_true')
     # vidt param
     parser.add_argument('--cross_indices', default=[3], nargs='+', type=int, help='stage ids for [DET x PATCH] cross-attention')
+    # d2detr with inited queries
+    parser.add_argument('--init_query_from_backbone', default=False, action='store_true')
+    parser.add_argument('--print_freq', default=100, type=int, help='number of iteration to print training logs')
     return parser
 
 
@@ -423,7 +426,7 @@ def main(args):
         if args.distributed:
             sampler_train.set_epoch(epoch)
         train_stats = train_one_epoch(
-            model, criterion, data_loader_train, optimizer, device, epoch, args.clip_max_norm)
+            model, criterion, data_loader_train, optimizer, device, epoch, args.clip_max_norm, print_freq=args.print_freq)
         lr_scheduler.step(epoch)
         if args.output_dir:
             checkpoint_paths = [output_dir / 'checkpoint.pth']

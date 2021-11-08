@@ -25,7 +25,8 @@ class DeformableTransformer(nn.Module):
                  num_decoder_layers=6, dim_feedforward=1024, dropout=0.1,
                  activation="relu", return_intermediate_dec=False,
                  num_feature_levels=4, dec_n_points=4,  enc_n_points=4,
-                 two_stage=False, two_stage_num_proposals=300, is_vidt=False):
+                 two_stage=False, two_stage_num_proposals=300,
+                 args=None):
         super().__init__()
 
         self.d_model = d_model
@@ -33,7 +34,6 @@ class DeformableTransformer(nn.Module):
         self.two_stage = two_stage
         self.two_stage_num_proposals = two_stage_num_proposals
 
-        self.is_vidt = is_vidt
         decoder_layer = DeformableTransformerDecoderLayer(d_model, dim_feedforward,
                                                           dropout, activation,
                                                           num_feature_levels, nhead, dec_n_points)
@@ -48,6 +48,8 @@ class DeformableTransformer(nn.Module):
             self.pos_trans_norm = nn.LayerNorm(d_model * 2)
         else:
             self.reference_points = nn.Linear(d_model, 2)
+
+        self.init_query_from_backbone = args.init_query_from_backbone
 
         self._reset_parameters()
 
@@ -119,7 +121,7 @@ class DeformableTransformer(nn.Module):
         valid_ratio = torch.stack([valid_ratio_w, valid_ratio_h], -1)
         return valid_ratio
 
-    def forward(self, srcs, masks, pos_embeds, query_embed=None):
+    def forward(self, srcs, masks, pos_embeds, query_embed=None, tgt=None):
         assert self.two_stage or query_embed is not None
 
         # prepare input for encoder
@@ -166,16 +168,15 @@ class DeformableTransformer(nn.Module):
             pos_trans_out = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords_unact)))
             query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
         else:
-            if self.is_vidt:
-                tgt = torch.zeros_like(query_embed)
-                reference_points = self.reference_points(query_embed).sigmoid()
-                init_reference_out = reference_points
-            else:
+            if not self.init_query_from_backbone:
                 query_embed, tgt = torch.split(query_embed, c, dim=1)
                 query_embed = query_embed.unsqueeze(0).expand(bs, -1, -1)
                 tgt = tgt.unsqueeze(0).expand(bs, -1, -1)
-                reference_points = self.reference_points(query_embed).sigmoid()
-                init_reference_out = reference_points
+            else:
+                query_embed = query_embed.expand(bs, -1, -1)
+                tgt = tgt
+            reference_points = self.reference_points(query_embed).sigmoid()
+            init_reference_out = reference_points
 
         # decoder
         hs, inter_references = self.decoder(tgt, reference_points, memory,
@@ -319,6 +320,6 @@ def build_deforamble_transformer_wo_encoder(args):
         enc_n_points=args.enc_n_points,
         two_stage=args.two_stage, # transformer neck w/o encoder cannot support original two stage
         two_stage_num_proposals=args.num_queries,
-        is_vidt=True if args.detector == 'vidt' else False)
+        args=args)
 
 
