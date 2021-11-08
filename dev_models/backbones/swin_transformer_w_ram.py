@@ -1038,6 +1038,7 @@ def build_backbone(args):
                             ape=False,
                             drop_path_rate=0.1,
                             patch_norm=True,
+                            out_indices=(1, 2, 3),
                             use_checkpoint=False)
     else:
         logger.error(f"{args.vit_backbone} not supported")

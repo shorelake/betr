@@ -14,7 +14,6 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 import math
-from dev_models import backbones
 
 from util import box_ops
 from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
