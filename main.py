@@ -119,6 +119,8 @@ def get_args_parser():
                         help="Dropout applied in the transformer")
     parser.add_argument('--nheads', default=8, type=int,
                         help="Number of attention heads inside the transformer's attentions")
+    ### conditional detr & detr
+    parser.add_argument('--pre_norm', action='store_true')
     ### Def DETR setting
     parser.add_argument('--num_queries', default=300, type=int,
                         help="Number of query slots")
@@ -257,7 +259,6 @@ def main(args):
     model_without_ddp = model
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f'number of params:{n_parameters}')
-
     dataset_train, dataset_val = get_datasets(args)
     # dataset_train = build_dataset(image_set='train', args=args)
     # dataset_val = build_dataset(image_set='val', args=args)

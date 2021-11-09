@@ -18,6 +18,10 @@ def build_model(args):
         from models.anchor_detr import build_anchordetr
         logger.info("build anchor detr")
         return build_anchordetr(args)
+    elif args.detector == 'conditional_detr':
+        from models.cond_detr import build_conditionaldetr
+        logger.info("build conditional detr")
+        return build_conditionaldetr(args)
     else:
         logger.error(f"wrong detector {args.detector}")
         raise ValueError(f"wrong detector {args.detector}")
