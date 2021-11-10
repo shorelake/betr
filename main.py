@@ -227,7 +227,6 @@ def main(args):
     model, criterion, postprocessors = get_model(args)
     # model, criterion, postprocessors = build_model(args)
     model.to(device)
-
     if getattr(model.backbone[0], 'backbone_names', None) is not None:
         # print('*'*30)
         args.lr_backbone_names = model.backbone[0].backbone_names
@@ -294,7 +293,19 @@ def main(args):
 
     for n, p in model_without_ddp.named_parameters():
         logger.info(n)
+    # name_para_dict = [
+    #     {
+    #         "non_backbone_name":[n for n, p in model_without_ddp.named_parameters()
+    #                 if not match_name_keywords(n, args.lr_backbone_names) and not match_name_keywords(n, args.lr_linear_proj_names) and p.requires_grad]
+    #     },
+    #     {
+    #         "backbone_name":[n for n, p in model_without_ddp.named_parameters() if match_name_keywords(n, args.lr_backbone_names) and p.requires_grad]
+    #     },
+    #     {
+    #         "linear_proj_name":[n for n, p in model_without_ddp.named_parameters() if match_name_keywords(n, args.lr_linear_proj_names) and p.requires_grad]
+    #     }
 
+    # ]
     # set param dicts
     if hasattr(model_without_ddp.backbone[0], 'no_weight_decay'):
         no_weight_decay_names = model_without_ddp.backbone[0].no_weight_decay()

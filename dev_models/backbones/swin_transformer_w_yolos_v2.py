@@ -19,6 +19,40 @@ from dev_models.backbone import build_position_encoding
 from loguru import logger
 __all__ = ['swin_nano_yolos_v2', 'swin_tiny_yolos_v2', 'swin_small_yolos_v2', 'swin_base_yolos_v2']
 
+def masked_sin_pos_encoding(x, mask, num_pos_feats, temperature=10000, scale=2 * math.pi):
+    """ Masked Sinusoidal Positional Encoding
+    Parameters:
+        x: [PATCH] tokens
+        mask: the padding mask for [PATCH] tokens
+        num_pos_feats: the size of channel dimension
+        temperature: the temperature value
+        scale: the normalization scale
+    Returns:
+        pos: Sinusoidal positional encodings
+    """
+
+    num_pos_feats = num_pos_feats // 2
+    not_mask = ~mask
+
+    y_embed = not_mask.cumsum(1, dtype=torch.float32)
+    x_embed = not_mask.cumsum(2, dtype=torch.float32)
+
+    eps = 1e-6
+    y_embed = y_embed / (y_embed[:, -1:, :] + eps) * scale
+    x_embed = x_embed / (x_embed[:, :, -1:] + eps) * scale
+
+    dim_t = torch.arange(num_pos_feats, dtype=torch.float32, device=x.device)
+    dim_t = temperature ** (2 * (dim_t // 2) / num_pos_feats)
+
+    pos_x = x_embed[:, :, :, None] / dim_t
+    pos_y = y_embed[:, :, :, None] / dim_t
+
+    pos_x = torch.stack((pos_x[:, :, :, 0::2].sin(), pos_x[:, :, :, 1::2].cos()), dim=4).flatten(3)
+    pos_y = torch.stack((pos_y[:, :, :, 0::2].sin(), pos_y[:, :, :, 1::2].cos()), dim=4).flatten(3)
+    pos = torch.cat((pos_y, pos_x), dim=3)
+
+    return pos
+
 
 class Conv1x1(nn.Module):
     def __init__(self, in_channel, out_channel, force=True):
@@ -136,6 +170,7 @@ class WindowAttention(nn.Module):
         self.relative_position_bias_table = nn.Parameter(
             torch.zeros((2 * window_size[0] - 1) * (2 * window_size[1] - 1), num_heads))  # 2*Wh-1 * 2*Ww-1, nH
 
+
         # get pair-wise relative position index for each token inside the window
         coords_h = torch.arange(self.window_size[0])
         coords_w = torch.arange(self.window_size[1])
@@ -157,38 +192,116 @@ class WindowAttention(nn.Module):
         trunc_normal_(self.relative_position_bias_table, std=.02)
         self.softmax = nn.Softmax(dim=-1)
 
-    def forward(self, x, mask=None):
+    def forward(self, x, det, mask=None, cross_attn=False, cross_attn_mask=None):
         """ Forward function.
-        Args:
-            x: input features with shape of (num_windows*B, N, C)
-            mask: (0/-inf) mask with shape of (num_windows, Wh*Ww, Wh*Ww) or None
+        RAM module receives [Patch] and [DET] tokens and returns their calibrated ones
+        Parameters:
+            x: [PATCH] tokens
+            det: [DET] tokens
+            mask: (0/-inf) mask with shape of (num_windows, Wh*Ww, Wh*Ww) or None -> mask for shifted window attention
+            "additional inputs for RAM"
+            cross_attn: whether to use cross-attention [det x patch] (for selective cross-attention)
+            cross_attn_mask: mask for cross-attention
+        Returns:
+            patch_x: the calibrated [PATCH] tokens
+            det_x: the calibrated [DET] tokens
         """
-        B_, N, C = x.shape
-        qkv = self.qkv(x).reshape(B_, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
 
-        q = q * self.scale
-        attn = (q @ k.transpose(-2, -1))
+        assert self.window_size[0] == self.window_size[1]
+        window_size = self.window_size[0]
+        local_map_size = window_size * window_size
 
+        # projection before window partitioning
+        if not cross_attn:
+            B, H, W, C = x.shape
+            N = H * W
+            x = x.view(B, N, C)
+            x = torch.cat([x, det], dim=1)
+            full_qkv = self.qkv(x)
+            patch_qkv, det_qkv = full_qkv[:, :N, :], full_qkv[:, N:, :]
+        else:
+            B, H, W, C = x[0].shape
+            N = H * W
+            _, ori_H, ori_W, _ = x[1].shape
+            ori_N = ori_H * ori_W
+
+            shifted_x = x[0].view(B, N, C)
+            cross_x = x[1].view(B, ori_N, C)
+            x = torch.cat([shifted_x, cross_x, det], dim=1)
+            full_qkv = self.qkv(x)
+            patch_qkv, cross_patch_qkv, det_qkv = \
+                full_qkv[:, :N, :], full_qkv[:, N:N + ori_N, :], full_qkv[:, N + ori_N:, :]
+        patch_qkv = patch_qkv.view(B, H, W, -1)
+
+        # window partitioning for [PATCH] tokens
+        patch_qkv = window_partition(patch_qkv, window_size)  # nW*B, window_size, window_size, C
+        B_ = patch_qkv.shape[0]
+        patch_qkv = patch_qkv.reshape(B_, window_size * window_size, 3, self.num_heads, C // self.num_heads)
+        _patch_qkv = patch_qkv.permute(2, 0, 3, 1, 4)
+        patch_q, patch_k, patch_v = _patch_qkv[0], _patch_qkv[1], _patch_qkv[2]
+
+        # [PATCH x PATCH] self-attention using window partitions
+        patch_q = patch_q * self.scale
+        patch_attn = (patch_q @ patch_k.transpose(-2, -1))
+        # add relative pos bias for [patch x patch] self-attention
         relative_position_bias = self.relative_position_bias_table[self.relative_position_index.view(-1)].view(
             self.window_size[0] * self.window_size[1], self.window_size[0] * self.window_size[1], -1)  # Wh*Ww,Wh*Ww,nH
         relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()  # nH, Wh*Ww, Wh*Ww
-        attn = attn + relative_position_bias.unsqueeze(0)
+        patch_attn = patch_attn + relative_position_bias.unsqueeze(0)
 
+        # if shifted window is used, it needs to apply the mask
         if mask is not None:
             nW = mask.shape[0]
-            attn = attn.view(B_ // nW, nW, self.num_heads, N, N) + mask.unsqueeze(1).unsqueeze(0)
-            attn = attn.view(-1, self.num_heads, N, N)
-            attn = self.softmax(attn)
-        else:
-            attn = self.softmax(attn)
+            patch_attn = patch_attn.view(B_ // nW, nW, self.num_heads, local_map_size, local_map_size) + \
+                         mask.unsqueeze(1).unsqueeze(0)
+            patch_attn = patch_attn.view(-1, self.num_heads, local_map_size, local_map_size)
 
-        attn = self.attn_drop(attn)
+        patch_attn = self.softmax(patch_attn)
+        patch_attn = self.attn_drop(patch_attn)
+        patch_x = (patch_attn @ patch_v).transpose(1, 2).reshape(B_, window_size, window_size, C)
 
-        x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
+        # extract qkv for [DET] tokens
+        det_qkv = det_qkv.view(B, -1, 3, self.num_heads, C // self.num_heads)
+        det_qkv = det_qkv.permute(2, 0, 3, 1, 4)
+        det_q, det_k, det_v = det_qkv[0], det_qkv[1], det_qkv[2]
+
+        # if cross-attention is activated
+        if cross_attn:
+
+            # reconstruct the spatial form of [PATCH] tokens for global [DET x PATCH] attention
+            cross_patch_qkv = cross_patch_qkv.view(B, ori_H, ori_W, 3, self.num_heads, C // self.num_heads)
+            patch_kv = cross_patch_qkv[:, :, :, 1:, :, :].permute(3, 0, 4, 1, 2, 5).contiguous()
+            patch_kv = patch_kv.view(2, B, self.num_heads, ori_H * ori_W, -1)
+
+            # extract "key and value" of [PATCH] tokens for cross-attention
+            cross_patch_k, cross_patch_v = patch_kv[0], patch_kv[1]
+
+            # bind key and value of [PATCH] and [DET] tokens for [DET X [PATCH, DET]] attention
+            det_k, det_v = torch.cat([cross_patch_k, det_k], dim=2), torch.cat([cross_patch_v, det_v], dim=2)
+
+        # [DET x DET] self-attention or binded [DET x [PATCH, DET]] attention
+        det_q = det_q * self.scale
+        det_attn = (det_q @ det_k.transpose(-2, -1))
+        # apply cross-attention mask if available
+        if cross_attn_mask is not None:
+            det_attn = det_attn + cross_attn_mask
+        det_attn = self.softmax(det_attn)
+        det_attn = self.attn_drop(det_attn)
+        det_x = (det_attn @ det_v).transpose(1, 2).reshape(B, -1, C)
+
+        # reverse window for [PATCH] tokens <- the output of [PATCH x PATCH] self attention
+        patch_x = window_reverse(patch_x, window_size, H, W)
+
+        # projection for outputs from multi-head
+        x = torch.cat([patch_x.view(B, H*W, C), det_x], dim=1)
         x = self.proj(x)
         x = self.proj_drop(x)
-        return x
+
+        # decompose after FFN into [PATCH] and [DET] tokens
+        patch_x = x[:, :H * W, :].view(B, H, W, C)
+        det_x = x[:, H * W:, :]
+
+        return patch_x, det_x
 
 
 class SwinTransformerBlock(nn.Module):
@@ -232,20 +345,30 @@ class SwinTransformerBlock(nn.Module):
         self.H = None
         self.W = None
 
-    def forward(self, x, mask_matrix):
+    def forward(self, x, mask_matrix, pos, cross_attn, cross_attn_mask):
         """ Forward function.
-        Args:
-            x: Input feature, tensor size (B, H*W, C).
+        Parameters:
+            x: Input feature, tensor size (B, H*W + DET, C). i.e., binded [PATCH, DET] tokens
             H, W: Spatial resolution of the input feature.
             mask_matrix: Attention mask for cyclic shift.
+            "additional inputs'
+            pos: (patch_pos, det_pos)
+            cross_attn: whether to use cross attn [det x [det + patch]]
+            cross_attn_mask: attention mask for cross-attention
+        Returns:
+            x: calibrated & binded [PATCH, DET] tokens
         """
+
         B, L, C = x.shape
         H, W = self.H, self.W
-        assert L == H * W, "input feature has wrong size"
+
+        assert L == H * W + self.det_token_num, "input feature has wrong size"
 
         shortcut = x
         x = self.norm1(x)
+        x, det = x[:, :H * W, :], x[:, H * W:, :]
         x = x.view(B, H, W, C)
+        orig_x = x
 
         # pad feature maps to multiples of window size
         pad_l = pad_t = 0
@@ -253,6 +376,10 @@ class SwinTransformerBlock(nn.Module):
         pad_b = (self.window_size - H % self.window_size) % self.window_size
         x = F.pad(x, (0, 0, pad_l, pad_r, pad_t, pad_b))
         _, Hp, Wp, _ = x.shape
+
+        # projection for det positional encodings: make the channel size suitable for the current layer
+        patch_pos, det_pos = pos
+        det_pos = self.fuse_det_pos_linear(det_pos)
 
         # cyclic shift
         if self.shift_size > 0:
@@ -262,16 +389,24 @@ class SwinTransformerBlock(nn.Module):
             shifted_x = x
             attn_mask = None
 
-        # partition windows
-        x_windows = window_partition(shifted_x, self.window_size)  # nW*B, window_size, window_size, C
-        x_windows = x_windows.view(-1, self.window_size * self.window_size, C)  # nW*B, window_size*window_size, C
+        # prepare cross-attn and add positional encodings
+        if cross_attn:
+            # patch token (for cross-attention) + Sinusoidal pos encoding
+            cross_patch = orig_x + patch_pos
+            # det token + learnable pos encoding
+            det = det + det_pos
+            shifted_x = (shifted_x, cross_patch)
+        else:
+            # it cross_attn is deativated, only [PATCH] and [DET] self-attention are performed
+            det = det + det_pos
+            shifted_x = shifted_x
 
         # W-MSA/SW-MSA
-        attn_windows = self.attn(x_windows, mask=attn_mask)  # nW*B, window_size*window_size, C
-
-        # merge windows
-        attn_windows = attn_windows.view(-1, self.window_size, self.window_size, C)
-        shifted_x = window_reverse(attn_windows, self.window_size, Hp, Wp)  # B H' W' C
+        shifted_x, det = self.attn(shifted_x, mask=attn_mask,
+                                   # additional parameters
+                                   det=det,
+                                   cross_attn=cross_attn,
+                                   cross_attn_mask=cross_attn_mask)
 
         # reverse cyclic shift
         if self.shift_size > 0:
@@ -283,6 +418,7 @@ class SwinTransformerBlock(nn.Module):
             x = x[:, :H, :W, :].contiguous()
 
         x = x.view(B, H * W, C)
+        x = torch.cat([x, det], dim=1)
 
         # FFN
         x = shortcut + self.drop_path(x)
@@ -305,13 +441,18 @@ class PatchMerging(nn.Module):
 
     def forward(self, x, H, W):
         """ Forward function.
-        Args:
-            x: Input feature, tensor size (B, H*W, C).
+        Parameters:
+            x: Input feature, tensor size (B, H*W, C), i.e., binded [PATCH, DET] tokens
             H, W: Spatial resolution of the input feature.
+        Returns:
+            x: merged [PATCH, DET] tokens;
+            only [PATCH] tokens are reduced in spatial dim, while [DET] tokens is fix-scale
         """
-        B, L, C = x.shape
-        assert L == H * W, "input feature has wrong size"
 
+        B, L, C = x.shape
+        assert L == H * W + self.det_token_num, "input feature has wrong size"
+
+        x, det = x[:, :H * W, :], x[:, H * W:, :]
         x = x.view(B, H, W, C)
 
         # padding
@@ -326,6 +467,10 @@ class PatchMerging(nn.Module):
         x = torch.cat([x0, x1, x2, x3], -1)  # B H/2 W/2 4*C
         x = x.view(B, -1, 4 * C)  # B H/2*W/2 4*C
 
+        # simply repeating for DET tokens
+        det = det.repeat(1, 1, 4)
+
+        x = torch.cat([x, det], dim=1)
         x = self.norm(x)
         x = self.reduction(x)
 
@@ -363,11 +508,13 @@ class BasicLayer(nn.Module):
                  drop_path=0.,
                  norm_layer=nn.LayerNorm,
                  downsample=None,
-                 use_checkpoint=False):
+                 use_checkpoint=False,
+                 last=False):
         super().__init__()
         self.window_size = window_size
         self.shift_size = window_size // 2
         self.depth = depth
+        self.dim = dim
         self.use_checkpoint = use_checkpoint
 
         # build blocks
@@ -391,13 +538,19 @@ class BasicLayer(nn.Module):
             self.downsample = downsample(dim=dim, norm_layer=norm_layer)
         else:
             self.downsample = None
+        
 
-    def forward(self, x, H, W):
+    def forward(self, x, H, W, det_pos, input_mask, cross_attn=False):
         """ Forward function.
-        Args:
+        Parameters:
             x: Input feature, tensor size (B, H*W, C).
             H, W: Spatial resolution of the input feature.
+            det_pos: pos encoding for det token
+            input_mask: padding mask for inputs
+            cross_attn: whether to use cross attn [det x [det + patch]]
         """
+
+        B = x.shape[0]
 
         # calculate attention mask for SW-MSA
         Hp = int(np.ceil(H / self.window_size)) * self.window_size
@@ -415,17 +568,67 @@ class BasicLayer(nn.Module):
                 img_mask[:, h, w, :] = cnt
                 cnt += 1
 
-        mask_windows = window_partition(img_mask, self.window_size)  # nW, window_size, window_size, 1
+        # mask for cyclic shift
+        mask_windows = window_partition(img_mask, self.window_size)
         mask_windows = mask_windows.view(-1, self.window_size * self.window_size)
         attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
         attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
 
-        for blk in self.blocks:
+        # compute sinusoidal pos encoding and cross-attn mask here to avoid redundant computation
+        if cross_attn:
+
+            _H, _W = input_mask.shape[1:]
+            if not (_H == H and _W == W):
+                input_mask = F.interpolate(input_mask[None].float(), size=(H, W)).to(torch.bool)[0]
+
+            # sinusoidal pos encoding for [PATCH] tokens used in cross-attention
+            patch_pos = masked_sin_pos_encoding(x, input_mask, self.dim)
+
+            # attention padding mask due to the zero padding in inputs
+            # the zero (padded) area is masked by 1.0 in 'input_mask'
+            cross_attn_mask = input_mask.float()
+            cross_attn_mask = cross_attn_mask.masked_fill(cross_attn_mask != 0.0, float(-100.0)). \
+                masked_fill(cross_attn_mask == 0.0, float(0.0))
+
+            # pad for detection token (this padding is required to process the binded [PATCH, DET] attention
+            cross_attn_mask = cross_attn_mask.view(B, H * W).unsqueeze(1).unsqueeze(2)
+            cross_attn_mask = F.pad(cross_attn_mask, (0, self.det_token_num), value=0)
+
+        else:
+            patch_pos = None
+            cross_attn_mask = None
+
+        # zip pos encodings
+        pos = (patch_pos, det_pos)
+
+        for n_blk, blk in enumerate(self.blocks):
             blk.H, blk.W = H, W
-            if self.use_checkpoint:
-                x = checkpoint.checkpoint(blk, x, attn_mask)
+
+            # for selective cross-attention
+            if cross_attn:
+                _cross_attn = True
+                _cross_attn_mask = cross_attn_mask
+                _pos = pos # i.e., (patch_pos, det_pos)
             else:
-                x = blk(x, attn_mask)
+                _cross_attn = False
+                _cross_attn_mask = None
+                _pos = (None, det_pos)
+
+            if self.use_checkpoint:
+                x = checkpoint.checkpoint(blk, x, attn_mask,
+                                          # additional inputs
+                                          pos=_pos,
+                                          cross_attn=_cross_attn,
+                                          cross_attn_mask=_cross_attn_mask)
+            else:
+                x = blk(x, attn_mask,
+                        # additional inputs
+                        pos=_pos,
+                        cross_attn=_cross_attn,
+                        cross_attn_mask=_cross_attn_mask)
+
+        # reduce the number of patch tokens, but maintaining a fixed-scale det tokens
+        # meanwhile, the channel dim increases by a factor of 2
         if self.downsample is not None:
             x_down = self.downsample(x, H, W)
             Wh, Ww = (H + 1) // 2, (W + 1) // 2
@@ -959,7 +1162,8 @@ class SwinTransformer(nn.Module):
                  fuse_start_lvl=1, fuse_num_addition=1,
                  fuse_dense_lookback=False, fuse_lookback_extra_depth=1, fuse_single_scale=False,
                  # yolos det token param
-                 det_token_num=100
+                 det_token_num=100,
+                 cross_indices=[3]
                 ):
         super().__init__()
 
@@ -1022,7 +1226,7 @@ class SwinTransformer(nn.Module):
                                        fuse_start_lvl=fuse_start_lvl, fuse_num_addition=fuse_num_addition,
                                        fuse_dense_lookback=fuse_dense_lookback, fuse_lookback_extra_depth=fuse_lookback_extra_depth, 
                                        fuse_single_scale=fuse_single_scale,
-                                       det_token_num=det_token_num)
+                                       det_token_num=det_token_num, cross_indices=cross_indices)
 
         # # add a norm layer for each output
         # for i_layer in out_indices:
@@ -1040,14 +1244,30 @@ class SwinTransformer(nn.Module):
                                   fuse_num_heads=8, fuse_mlp_ratios=4, fuse_depth=3, 
                                   fuse_linear=False, fuse_start_lvl=1, fuse_num_addition=1,
                                   fuse_dense_lookback=False, fuse_lookback_extra_depth=1, fuse_single_scale=False,
-                                  det_token_num=100):
+                                  det_token_num=100, cross_indices=[3]):
         # init det tokens
-        self.fuse_det_tokens = nn.Parameter(torch.zeros(1, det_token_num, fuse_dim))
+        self.det_token_num = det_token_num
+        self.fuse_det_tokens = nn.Parameter(torch.zeros(1, det_token_num,  self.num_features[0]))
         self.fuse_det_tokens = trunc_normal_(self.fuse_det_tokens, std=.02)
         # learnable positional encoding for detection tokens
         det_pos_embed = torch.zeros(1, det_token_num, fuse_dim)
         det_pos_embed = trunc_normal_(det_pos_embed, std=.02)
         self.fuse_det_pos_embed = nn.Parameter(det_pos_embed)
+
+        self.num_channels = [self.num_features[i+1] for i in range(len(self.num_features)-1)]
+        self.cross_indices = cross_indices
+        # divisor to reduce the spatial size of the mask
+        self.mask_divisor = 2 ** (len(self.layers) - len(self.cross_indices))
+        # projection matrix for det pos encoding in each Swin layer (there are 4 blocks)
+        for layer in self.layers:
+            layer.det_token_num = det_token_num
+            if layer.downsample is not None:
+                layer.downsample.det_token_num = det_token_num
+            for block in layer.blocks:
+                block.det_token_num = det_token_num
+                block.fuse_det_pos_linear = nn.Linear(fuse_dim, block.dim)
+        # self.layers[-1].downsample = None
+        self.fuse_det_linear = nn.Linear(self.num_features[-1], fuse_dim)
 
         # init CECA
         self.fuse_dense_lookback = fuse_dense_lookback
@@ -1155,8 +1375,10 @@ class SwinTransformer(nn.Module):
             logger.error('pretrained must be a str or None')
             raise TypeError('pretrained must be a str or None')
 
-    def forward_dense(self, x):
+    def forward_dense(self, x, mask):
         """Forward function."""
+        # original input shape
+        B, ori_H, ori_W = x.shape[0], x.shape[2], x.shape[3]
         x = self.patch_embed(x)
 
         Wh, Ww = x.size(2), x.size(3)
@@ -1168,17 +1390,31 @@ class SwinTransformer(nn.Module):
             x = x.flatten(2).transpose(1, 2)
         x = self.pos_drop(x)
 
-        B, _, _ = x.shape
         det_tokens = self.fuse_det_tokens.expand(B,-1,-1)
         det_pos = self.fuse_det_pos_embed
-        det_tokens = det_tokens + det_pos
+        # prepare a mask for cross attention
+        mask = F.interpolate(mask[None].float(),
+                     size=(Wh // self.mask_divisor, Ww // self.mask_divisor)).to(torch.bool)[0]
+
         outs = []
         spatial_shapes = []
         for i in range(self.num_layers+self.fuse_num_addition):
             if i < self.num_layers:
                 # normal layer
                 layer = self.layers[i]
-                x_out, H, W, x, Wh, Ww = layer(x, Wh, Ww)
+                # whether to use cross-attention
+                cross_attn = True if i in self.cross_indices else False
+
+                # concat input
+                x = torch.cat([x, det_tokens], dim=1)
+                # inference
+                x_out, H, W, x, Wh, Ww = layer(x, Wh, Ww,
+                                            # additional input for VIDT
+                                            input_mask=mask,
+                                            det_pos=det_pos,
+                                            cross_attn=cross_attn)
+                x_out, det_tokens_out = x_out[:, :-self.det_token_num, :], x_out[:, -self.det_token_num:, :]
+                x, det_tokens = x[:, :-self.det_token_num, :], x[:, -self.det_token_num:, :]
             else:
                 addin_proj = self.fuse_addin_proj[i - self.num_layers]
                 x, (H, W) = addin_proj(x, H, W)
@@ -1194,7 +1430,8 @@ class SwinTransformer(nn.Module):
                 else:
                     outs.append(x.flatten(2).transpose(1, 2))
                     spatial_shapes.append((H, W))
-        import pdb;pdb.set_trace()
+        det_tokens = self.fuse_det_linear(det_tokens)
+        det_tokens = det_tokens + det_pos
         for i in range(len(outs)):
             if i == 0 and self.fuse_dense_lookback and self.fuse_lookback_extra_depth > 0:
                 fuse_block = getattr(self, f"fuse_layer1")
@@ -1211,7 +1448,9 @@ class SwinTransformer(nn.Module):
                 fuse_norm = getattr(self, f"fuse_norm{i+1}")
                 if self.fuse_dense_lookback:
                     outs_holdout, spatial_shapes_holdout = outs[:i], spatial_shapes[:i]
-                    outs_i, spatial_shapes_i = outs[i], spatial_shapes[i]   
+                    outs_i, spatial_shapes_i = outs[i], spatial_shapes[i]
+                    # outs_i = [outs_i]   
+                    spatial_shapes_i = [spatial_shapes_i]
                 for blk in fuse_block:
                     if self.fuse_dense_lookback:
                         outs_i, det_tokens = blk(outs_i, None, None, spatial_shapes_i, outs_holdout, spatial_shapes_holdout, det_tokens=det_tokens)
@@ -1220,18 +1459,18 @@ class SwinTransformer(nn.Module):
                 outs_i = fuse_norm(outs_i)
                 det_tokens = fuse_norm(det_tokens)
                 
-                sizes = [h * w for h, w in spatial_shapes_i]
-                outs_i = list(outs_i.split(sizes, dim=1))
+                # sizes = [h * w for h, w in spatial_shapes_i]
+                # outs_i = list(outs_i.split(sizes, dim=1))
 
                 if self.fuse_dense_lookback:
                     outs[i] = outs_i
-                    spatial_shapes[i] = spatial_shapes_i
+                    # spatial_shapes[i] = spatial_shapes_i
 
         outs = [x.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous() for x, (H, W) in zip(outs, spatial_shapes)]
         return outs, det_tokens, det_pos
 
     def forward(self, tensor_list: NestedTensor):
-        xs, det_tokens, det_pos = self.forward_dense(tensor_list.tensors)
+        xs, det_tokens, det_pos = self.forward_dense(tensor_list.tensors, tensor_list.mask)
         out: Dict[str, NestedTensor] = {}
         for i, x in enumerate(xs):
             if self.fuse_single_scale and i < len(xs) - 1: continue
@@ -1367,7 +1606,8 @@ def build_backbone(args):
                             fuse_num_addition=0 if fuse_single_scale else 1,
                             fuse_single_scale=fuse_single_scale,
                             # yolos det_token num
-                            det_token_num=args.num_queries
+                            det_token_num=args.num_queries,
+                            cross_indices=args.cross_indices
                             )
     else:
         logger.error(f"{args.vit_backbone} not supported")
@@ -1377,9 +1617,9 @@ def build_backbone(args):
     else:
         backbone.strides = [8, 16, 32, 64]
         backbone.num_channels = [256,256,256,256]
-    backbone.non_backbone_names = sorted(list(set(['backbone.0.' + name.split('.')[0] 
+    backbone.non_backbone_names = sorted(list(set(['backbone.0.' + name 
                                         for name, param in backbone.named_parameters() if param.requires_grad and 'fuse' in name])))
-    backbone.backbone_names     = sorted(list(set(['backbone.0.' + name.split('.')[0] 
+    backbone.backbone_names     = sorted(list(set(['backbone.0.' + name 
                                         for name, param in backbone.named_parameters() if param.requires_grad and 'fuse' not in name])))
     backbone.init_weights(args.pretrained_path)
     model = Joiner(backbone, position_embedding)
