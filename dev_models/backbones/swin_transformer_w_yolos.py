@@ -1108,6 +1108,9 @@ class SwinTransformer(nn.Module):
 
             self.add_module(f'fuse_layer1', fuse_block)
 
+    @torch.jit.ignore
+    def no_weight_decay(self):
+        return ['fuse_det_pos_embed', 'fuse_det_tokens']
     def _freeze_stages(self):
         if self.frozen_stages >= 0:
             self.patch_embed.eval()

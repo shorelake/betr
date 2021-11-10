@@ -1194,7 +1194,7 @@ class SwinTransformer(nn.Module):
                 else:
                     outs.append(x.flatten(2).transpose(1, 2))
                     spatial_shapes.append((H, W))
-
+        import pdb;pdb.set_trace()
         for i in range(len(outs)):
             if i == 0 and self.fuse_dense_lookback and self.fuse_lookback_extra_depth > 0:
                 fuse_block = getattr(self, f"fuse_layer1")
@@ -1212,7 +1212,6 @@ class SwinTransformer(nn.Module):
                 if self.fuse_dense_lookback:
                     outs_holdout, spatial_shapes_holdout = outs[:i], spatial_shapes[:i]
                     outs_i, spatial_shapes_i = outs[i], spatial_shapes[i]   
-                outs_i = torch.cat(outs_i, 1)
                 for blk in fuse_block:
                     if self.fuse_dense_lookback:
                         outs_i, det_tokens = blk(outs_i, None, None, spatial_shapes_i, outs_holdout, spatial_shapes_holdout, det_tokens=det_tokens)
