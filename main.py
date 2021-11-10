@@ -216,7 +216,6 @@ def main(args):
     if args.frozen_weights is not None:
         assert args.masks, "Frozen training is meant for segmentation only"
     logger.info(args)
-
     device = torch.device(args.device)
 
     # fix the seed for reproducibility
