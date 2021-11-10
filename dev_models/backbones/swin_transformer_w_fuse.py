@@ -1231,6 +1231,29 @@ def build_backbone(args):
                             fuse_num_addition=0 if fuse_single_scale else 1,
                             fuse_single_scale=fuse_single_scale
                             )
+    elif args.vit_backbone == 'swin_tiny_fuse':
+        logger.info(f'build backbone {args.vit_backbone}')
+        backbone = SwinTransformer(embed_dim=96,
+                            depths=[2, 2, 6, 2],
+                            num_heads=[3, 6, 12, 24],
+                            window_size=7,
+                            mlp_ratio=4.,
+                            qkv_bias=True,
+                            qk_scale=None,
+                            drop_rate=0.,
+                            attn_drop_rate=0.,
+                            ape=False,
+                            drop_path_rate=0.1,
+                            patch_norm=True,
+                            use_checkpoint=False,
+                            # fuse param
+                            fuse_mlp_ratios=4, 
+                            fuse_depth=[3,3] if fuse_single_scale else [3,3,3],
+                            fuse_linear=True,
+                            fuse_dense_lookback=True, fuse_lookback_extra_depth=0,
+                            fuse_num_addition=0 if fuse_single_scale else 1,
+                            fuse_single_scale=fuse_single_scale
+                            )
     else:
         logger.error(f"{args.vit_backbone} not supported")
     if fuse_single_scale:

@@ -28,6 +28,9 @@ from datasets.coco import make_coco_transforms
 from engine import evaluate, train_one_epoch
 from models import build_model
 
+from fvcore.nn.flop_count import flop_count
+from util.get_flops import _DEFAULT_SUPPORTED_OPS, val_shapes_first_100
+
 from loguru import logger
 from util.logger import setup_logger
 from util.scheduler import create_scheduler
@@ -196,6 +199,8 @@ def get_args_parser():
     # d2detr with inited queries
     parser.add_argument('--init_query_from_backbone', default=False, action='store_true')
     parser.add_argument('--print_freq', default=100, type=int, help='number of iteration to print training logs')
+
+    parser.add_argument('--info', action='store_true')
     return parser
 
 
@@ -253,6 +258,22 @@ def main(args):
         assert cnt_param == cnt_param_backbone + cnt_param_non_backbone
         # print('*'*30)
 
+    if args.info:
+        model.eval()
+        
+        with torch.no_grad():
+            gflops = 0
+            for input_shape in val_shapes_first_100():
+                dummy_input = torch.randn(1, *input_shape).cuda()
+                g = flop_count(model, dummy_input, _DEFAULT_SUPPORTED_OPS)[0]
+                gflops += sum(g.values())
+            gflops /= 100
+
+        n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6
+
+        logger.info(f'gflops {gflops}')
+        logger.info(f'param {n_parameters}')
+        return
 
     model_without_ddp = model
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
