@@ -24,8 +24,11 @@ from models.backbone import build_backbone
 from models.matcher import build_matcher
 from models.segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
+import copy
 from .transformer import build_transformer
 
+def _get_clones(module, N):
+    return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
 class ConditionalDETR(nn.Module):
     """ This is the Conditional DETR module that performs object detection """
@@ -59,6 +62,16 @@ class ConditionalDETR(nn.Module):
         nn.init.constant_(self.bbox_embed.layers[-1].weight.data, 0)
         nn.init.constant_(self.bbox_embed.layers[-1].bias.data, 0)
 
+        num_pred = transformer.decoder.num_layers
+        self.with_box_refine = with_box_refine
+        if with_box_refine:
+            self.class_embed = _get_clones(self.class_embed, num_pred)
+            self.bbox_embed = _get_clones(self.bbox_embed, num_pred)
+            nn.init.constant_(self.bbox_embed[0].layers[-1].bias.data[2:], -2.0)
+            # hack implementation for iterative bounding box refinement
+            self.transformer.decoder.bbox_embed = self.bbox_embed
+
+
     def forward(self, samples: NestedTensor):
         """ The forward expects a NestedTensor, which consists of:
                - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
@@ -79,18 +92,42 @@ class ConditionalDETR(nn.Module):
 
         src, mask = features[-1].decompose()
         assert mask is not None
-        hs, reference = self.transformer(self.input_proj(src), mask, self.query_embed.weight, pos[-1])
-        
-        reference_before_sigmoid = inverse_sigmoid(reference)
-        outputs_coords = []
-        for lvl in range(hs.shape[0]):
-            tmp = self.bbox_embed(hs[lvl])
-            tmp[..., :2] += reference_before_sigmoid
-            outputs_coord = tmp.sigmoid()
-            outputs_coords.append(outputs_coord)
-        outputs_coord = torch.stack(outputs_coords)
 
-        outputs_class = self.class_embed(hs)
+        hs, init_reference, inter_references = self.transformer(self.input_proj(src), mask, self.query_embed.weight, pos[-1])
+        if not self.with_box_refine:
+            reference_before_sigmoid = inverse_sigmoid(init_reference)
+            outputs_coords = []
+            for lvl in range(hs.shape[0]):
+                tmp = self.bbox_embed(hs[lvl])
+                tmp[..., :2] += reference_before_sigmoid
+                outputs_coord = tmp.sigmoid()
+                outputs_coords.append(outputs_coord)
+            outputs_coord = torch.stack(outputs_coords)
+
+            outputs_class = self.class_embed(hs)
+        else:
+            
+            outputs_classes = []
+            outputs_coords = []
+            for lvl in range(hs.shape[0]):
+                if lvl == 0:
+                    reference = init_reference
+                else:
+                    reference = inter_references[lvl - 1]
+                reference = inverse_sigmoid(reference)
+                outputs_class = self.class_embed[lvl](hs[lvl])
+                tmp = self.bbox_embed[lvl](hs[lvl])
+                if reference.shape[-1] == 4:
+                    tmp += reference
+                else:
+                    assert reference.shape[-1] == 2
+                    tmp[..., :2] += reference
+                outputs_coord = tmp.sigmoid()
+                outputs_classes.append(outputs_class)
+                outputs_coords.append(outputs_coord)
+            outputs_class = torch.stack(outputs_classes)
+            outputs_coord = torch.stack(outputs_coords)
+
         out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
         if self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)

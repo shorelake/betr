@@ -15,7 +15,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
 from .attention import MultiheadAttention
-
+from util.misc import inverse_sigmoid
 class MLP(nn.Module):
     """ Very simple multi-layer perceptron (also called FFN)"""
 
@@ -86,9 +86,9 @@ class Transformer(nn.Module):
 
         tgt = torch.zeros_like(query_embed)
         memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)
-        hs, references = self.decoder(tgt, memory, memory_key_padding_mask=mask,
+        hs, init_reference, inter_references = self.decoder(tgt, memory, memory_key_padding_mask=mask,
                           pos=pos_embed, query_pos=query_embed)
-        return hs, references
+        return hs, init_reference, inter_references
 
 
 class TransformerEncoder(nn.Module):
@@ -125,6 +125,8 @@ class TransformerDecoder(nn.Module):
         self.return_intermediate = return_intermediate
         self.query_scale = MLP(d_model, d_model, d_model, 2)
         self.ref_point_head = MLP(d_model, d_model, 2, 2)
+
+        self.bbox_embed = None
         for layer_id in range(num_layers - 1):
             self.layers[layer_id + 1].ca_qpos_proj = None
 
@@ -138,9 +140,11 @@ class TransformerDecoder(nn.Module):
         output = tgt
 
         intermediate = []
-        reference_points_before_sigmoid = self.ref_point_head(query_pos)    # [num_queries, batch_size, 2]
-        reference_points = reference_points_before_sigmoid.sigmoid().transpose(0, 1)
-
+        intermediate_reference_points = []
+        init_reference_points_before_sigmoid = self.ref_point_head(query_pos)    # [num_queries, batch_size, 2]
+        init_reference_points = init_reference_points_before_sigmoid.sigmoid().transpose(0, 1)
+        # intermediate_reference_points.append(init_reference_points)
+        reference_points = init_reference_points
         for layer_id, layer in enumerate(self.layers):
             obj_center = reference_points[..., :2].transpose(0, 1)      # [num_queries, batch_size, 2]
 
@@ -160,8 +164,21 @@ class TransformerDecoder(nn.Module):
                            memory_key_padding_mask=memory_key_padding_mask,
                            pos=pos, query_pos=query_pos, query_sine_embed=query_sine_embed,
                            is_first=(layer_id == 0))
+
+            if self.bbox_embed is not None:
+                tmp = self.bbox_embed[layer_id](output.transpose(0,1))
+                if reference_points.shape[-1] == 4:
+                    new_reference_points = tmp + inverse_sigmoid(reference_points)
+                    new_reference_points = new_reference_points.sigmoid()
+                else:
+                    assert reference_points.shape[-1] == 2
+                    new_reference_points = tmp
+                    new_reference_points[..., :2] = tmp[..., :2] + inverse_sigmoid(reference_points)
+                    new_reference_points = new_reference_points.sigmoid()
+                reference_points = new_reference_points.detach()
             if self.return_intermediate:
                 intermediate.append(self.norm(output))
+                intermediate_reference_points.append(reference_points)
 
         if self.norm is not None:
             output = self.norm(output)
@@ -170,7 +187,10 @@ class TransformerDecoder(nn.Module):
                 intermediate.append(output)
 
         if self.return_intermediate:
-            return [torch.stack(intermediate).transpose(1, 2), reference_points]
+            if self.bbox_embed is not None:
+                return torch.stack(intermediate).transpose(1, 2), init_reference_points, torch.stack(intermediate_reference_points)
+            else:
+                return [torch.stack(intermediate).transpose(1, 2), init_reference_points, None]
 
         return output.unsqueeze(0)
 
