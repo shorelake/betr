@@ -199,8 +199,10 @@ def get_args_parser():
     # d2detr with inited queries
     parser.add_argument('--init_query_from_backbone', default=False, action='store_true')
     parser.add_argument('--print_freq', default=100, type=int, help='number of iteration to print training logs')
-
+    # info for param and FLOPS
     parser.add_argument('--info', action='store_true')
+    # using anchors for conditional_detr
+    parser.add_argument('--with_anchors', action='store_true')
     return parser
 
 
