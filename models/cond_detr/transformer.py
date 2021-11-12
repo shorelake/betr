@@ -540,6 +540,7 @@ def build_transformer(args):
         normalize_before=args.pre_norm,
         return_intermediate_dec=True,
         with_anchors=args.with_anchors,
+        spatial_prior=args.spatial_prior
     )
 
 

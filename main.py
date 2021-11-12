@@ -135,7 +135,7 @@ def get_args_parser():
                         help="Number of query positions")
     parser.add_argument('--num_query_pattern', default=3, type=int,
                         help="Number of query patterns")
-    parser.add_argument('--spatial_prior', default='learned', choices=['learned', 'grid'],
+    parser.add_argument('--spatial_prior', default='grid', choices=['learned', 'grid'],
                         type=str,help="Number of query patterns")
     parser.add_argument('--attention_type',
                         # default='nn.MultiheadAttention',
