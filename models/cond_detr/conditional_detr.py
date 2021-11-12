@@ -106,7 +106,6 @@ class ConditionalDETR(nn.Module):
 
             outputs_class = self.class_embed(hs)
         else:
-            
             outputs_classes = []
             outputs_coords = []
             for lvl in range(hs.shape[0]):
