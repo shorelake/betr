@@ -53,7 +53,7 @@ class Transformer(nn.Module):
                  return_intermediate_dec=False,
                  # with anchors param
                  with_anchors=False, num_query_pattern=1,spatial_prior="grid",
-                 num_query_position = 300):
+                 num_query_position = 300, no_query_scale=False):
         super().__init__()
 
         # for with_anchors
@@ -76,7 +76,7 @@ class Transformer(nn.Module):
         decoder_norm = nn.LayerNorm(d_model)
         self.decoder = TransformerDecoder(decoder_layer, num_decoder_layers, decoder_norm,
                                           return_intermediate=return_intermediate_dec,
-                                          d_model=d_model, with_anchors=with_anchors)
+                                          d_model=d_model, with_anchors=with_anchors, no_query_scale=no_query_scale)
 
         self._reset_parameters()
 
@@ -161,14 +161,16 @@ class TransformerEncoder(nn.Module):
 
 class TransformerDecoder(nn.Module):
 
-    def __init__(self, decoder_layer, num_layers, norm=None, return_intermediate=False, d_model=256, with_anchors=False):
+    def __init__(self, decoder_layer, num_layers, norm=None, return_intermediate=False, d_model=256, with_anchors=False, no_query_scale=False):
         super().__init__()
         self.with_anchors = with_anchors
         self.layers = _get_clones(decoder_layer, num_layers)
         self.num_layers = num_layers
         self.norm = norm
         self.return_intermediate = return_intermediate
-        self.query_scale = MLP(d_model, d_model, d_model, 2)
+        self.no_query_scale = no_query_scale
+        if not no_query_scale:
+            self.query_scale = MLP(d_model, d_model, d_model, 2)
 
         if not with_anchors:
             self.ref_point_head = MLP(d_model, d_model, 2, 2)
@@ -205,7 +207,10 @@ class TransformerDecoder(nn.Module):
             if layer_id == 0:
                 pos_transformation = 1
             else:
-                pos_transformation = self.query_scale(output)
+                if not self.no_query_scale:
+                    pos_transformation = self.query_scale(output)
+                else:
+                    pos_transformation = 1
 
             # get sine embedding for the query vector
             query_sine_embed = gen_sineembed_for_position(obj_center)     
@@ -540,7 +545,8 @@ def build_transformer(args):
         normalize_before=args.pre_norm,
         return_intermediate_dec=True,
         with_anchors=args.with_anchors,
-        spatial_prior=args.spatial_prior
+        spatial_prior=args.spatial_prior,
+        no_query_scale=args.no_query_scale,
     )
 
 

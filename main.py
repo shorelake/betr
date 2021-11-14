@@ -203,6 +203,7 @@ def get_args_parser():
     parser.add_argument('--info', action='store_true')
     # using anchors for conditional_detr
     parser.add_argument('--with_anchors', action='store_true')
+    parser.add_argument('--no_query_scale', action='store_true')
     return parser
 
 
