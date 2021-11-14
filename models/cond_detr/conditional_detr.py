@@ -49,8 +49,8 @@ class ConditionalDETR(nn.Module):
         self.class_embed = nn.Linear(hidden_dim, num_classes)
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
         self.with_anchors = with_anchors
-        # if not with_anchors:
-        self.query_embed = nn.Embedding(num_queries, hidden_dim)
+        if not with_anchors:
+            self.query_embed = nn.Embedding(num_queries, hidden_dim)
         self.input_proj = nn.Conv2d(backbone.num_channels[0], hidden_dim, kernel_size=1)
         self.backbone = backbone
         self.aux_loss = aux_loss
@@ -100,8 +100,8 @@ class ConditionalDETR(nn.Module):
         src, mask = features[-1].decompose()
         assert mask is not None
         query_embeds = None
-        # if not self.with_anchors:
-        query_embeds = self.query_embed.weight
+        if not self.with_anchors:
+            query_embeds = self.query_embed.weight
         hs, init_reference, inter_references = self.transformer(self.input_proj(src), mask, query_embeds, pos[-1])
         if not self.with_box_refine:
             reference_before_sigmoid = inverse_sigmoid(init_reference)

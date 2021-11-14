@@ -108,8 +108,8 @@ class Transformer(nn.Module):
             hs, init_reference, inter_references = self.decoder(tgt, memory, memory_key_padding_mask=mask,
                             pos=pos_embed, query_pos=query_embed)
         else:
-            query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)
-            tgt = torch.zeros_like(query_embed)
+            # query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)
+            # tgt = torch.zeros_like(query_embed)
             # tgt = self.pattern.weight.reshape(1, self.num_pattern, 1, c).repeat(bs, 1, self.num_position, 1).reshape(
             #     bs, self.num_pattern * self.num_position, c)
             if self.spatial_prior == "learned":
@@ -128,9 +128,11 @@ class Transformer(nn.Module):
                 reference_points = reference_points.unsqueeze(0).repeat(bs, self.num_pattern, 1)
             else:
                 raise ValueError(f'unknown {self.spatial_prior} spatial prior')
-            
+            query_pos = pos2posemb2d(reference_points.squeeze(2))
+            query_pos = query_pos.transpose(0,1)
+            tgt = torch.zeros_like(query_pos)
             hs, init_reference, inter_references = self.decoder.forward_anchors(tgt, memory, memory_key_padding_mask=mask,pos=pos_embed,
-                                                                                query_pos=query_embed, init_reference_points=reference_points)
+                                                                                query_pos=query_pos, init_reference_points=reference_points)
 
         return hs, init_reference, inter_references
 
