@@ -72,6 +72,11 @@ class ConditionalDETR(nn.Module):
             nn.init.constant_(self.bbox_embed[0].layers[-1].bias.data[2:], -2.0)
             # hack implementation for iterative bounding box refinement
             self.transformer.decoder.bbox_embed = self.bbox_embed
+        else:
+            nn.init.constant_(self.bbox_embed.layers[-1].bias.data[2:], -2.0) # limit, init pred w,h =0.1
+            self.class_embed = nn.ModuleList([self.class_embed for _ in range(num_pred)])
+            self.bbox_embed = nn.ModuleList([self.bbox_embed for _ in range(num_pred)])
+            self.transformer.decoder.bbox_embed = None
 
 
     def forward(self, samples: NestedTensor):
@@ -101,14 +106,16 @@ class ConditionalDETR(nn.Module):
         if not self.with_box_refine:
             reference_before_sigmoid = inverse_sigmoid(init_reference)
             outputs_coords = []
+            outputs_classes = []
             for lvl in range(hs.shape[0]):
-                tmp = self.bbox_embed(hs[lvl])
+                tmp = self.bbox_embed[lvl](hs[lvl])
+                outputs_class = self.class_embed[lvl](hs[lvl])
                 tmp[..., :2] += reference_before_sigmoid
                 outputs_coord = tmp.sigmoid()
+                outputs_classes.append(outputs_class)
                 outputs_coords.append(outputs_coord)
             outputs_coord = torch.stack(outputs_coords)
-
-            outputs_class = self.class_embed(hs)
+            outputs_class = torch.stack(outputs_classes)
         else:
             outputs_classes = []
             outputs_coords = []
