@@ -53,7 +53,9 @@ class Transformer(nn.Module):
                  return_intermediate_dec=False,
                  # with anchors param
                  with_anchors=False, num_query_pattern=1,spatial_prior="grid",
-                 num_query_position = 300, no_query_scale=False):
+                 num_query_position = 300, no_query_scale=False,
+                 # with box refine param
+                 with_box_refine=False):
         super().__init__()
 
         # for with_anchors
@@ -76,7 +78,8 @@ class Transformer(nn.Module):
         decoder_norm = nn.LayerNorm(d_model)
         self.decoder = TransformerDecoder(decoder_layer, num_decoder_layers, decoder_norm,
                                           return_intermediate=return_intermediate_dec,
-                                          d_model=d_model, with_anchors=with_anchors, no_query_scale=no_query_scale)
+                                          d_model=d_model, with_anchors=with_anchors, no_query_scale=no_query_scale,
+                                          with_box_refine=with_box_refine)
 
         self._reset_parameters()
 
@@ -105,7 +108,7 @@ class Transformer(nn.Module):
 
             tgt = torch.zeros_like(query_embed)
             
-            hs, init_reference, inter_references = self.decoder(tgt, memory, memory_key_padding_mask=mask,
+            hs, init_reference, inter_references, outputs_coord,  outputs_class = self.decoder(tgt, memory, memory_key_padding_mask=mask,
                             pos=pos_embed, query_pos=query_embed)
         else:
             # query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)
@@ -133,10 +136,10 @@ class Transformer(nn.Module):
             # tgt = torch.zeros_like(query_pos)
             _, num_q, _ = reference_points.shape
             tgt = torch.zeros([num_q,bs,self.d_model],device=memory.device)
-            hs, init_reference, inter_references = self.decoder.forward_anchors(tgt, memory, memory_key_padding_mask=mask,pos=pos_embed,
+            hs, init_reference, inter_references, outputs_coord,  outputs_class = self.decoder.forward_anchors(tgt, memory, memory_key_padding_mask=mask,pos=pos_embed,
                                                                                 init_reference_points=reference_points)
 
-        return hs, init_reference, inter_references
+        return hs, init_reference, inter_references, outputs_coord,  outputs_class
 
 
 class TransformerEncoder(nn.Module):
@@ -165,8 +168,11 @@ class TransformerEncoder(nn.Module):
 
 class TransformerDecoder(nn.Module):
 
-    def __init__(self, decoder_layer, num_layers, norm=None, return_intermediate=False, d_model=256, with_anchors=False, no_query_scale=False):
+    def __init__(self, decoder_layer, num_layers, norm=None, return_intermediate=False, d_model=256,
+                 with_anchors=False, no_query_scale=False,
+                 with_box_refine=False):
         super().__init__()
+        self.with_box_refine=with_box_refine
         self.with_anchors = with_anchors
         self.layers = _get_clones(decoder_layer, num_layers)
         self.num_layers = num_layers
@@ -185,6 +191,7 @@ class TransformerDecoder(nn.Module):
         #                             nn.Linear(d_model, d_model),
         #                         )
         self.bbox_embed = None
+        self.class_embed = None
         for layer_id in range(num_layers - 1):
             self.layers[layer_id + 1].ca_qpos_proj = None
         
@@ -205,6 +212,8 @@ class TransformerDecoder(nn.Module):
 
         intermediate = []
         intermediate_reference_points = []
+        outputs_coords = []
+        outputs_classes = []
         init_reference_points_before_sigmoid = self.ref_point_head(query_pos)    # [num_queries, batch_size, 2]
         init_reference_points = init_reference_points_before_sigmoid.sigmoid().transpose(0, 1)
         # intermediate_reference_points.append(init_reference_points)
@@ -231,33 +240,43 @@ class TransformerDecoder(nn.Module):
                            memory_key_padding_mask=memory_key_padding_mask,
                            pos=pos, query_pos=query_pos, query_sine_embed=query_sine_embed,
                            is_first=(layer_id == 0))
-
-            if self.bbox_embed is not None:
-                tmp = self.bbox_embed[layer_id](self.norm(output).transpose(0,1))
-                if reference_points.shape[-1] == 4:
-                    new_reference_points = tmp + inverse_sigmoid(reference_points)
-                    new_reference_points = new_reference_points.sigmoid()
+            if not self.with_box_refine:
+                after_norm_output = self.norm(output).transpose(0,1)
+                reference_before_sigmoid = inverse_sigmoid(init_reference_points)
+                tmp = self.bbox_embed[layer_id](after_norm_output)
+                outputs_class = self.class_embed[layer_id](after_norm_output)
+                tmp[..., :2] += reference_before_sigmoid
+                outputs_coord = tmp.sigmoid()
+                outputs_classes.append(outputs_class)
+                outputs_coords.append(outputs_coord)
+            else:
+                after_norm_output = self.norm(output).transpose(0,1)
+                reference_before_sigmoid = inverse_sigmoid(reference_points)
+                outputs_class = self.class_embed[layer_id](after_norm_output)
+                tmp = self.bbox_embed[layer_id](after_norm_output)
+                if reference_before_sigmoid.shape[-1] == 4:
+                    tmp += reference_before_sigmoid
                 else:
-                    assert reference_points.shape[-1] == 2
-                    new_reference_points = tmp
-                    new_reference_points[..., :2] = tmp[..., :2] + inverse_sigmoid(reference_points)
-                    new_reference_points = new_reference_points.sigmoid()
-                reference_points = new_reference_points.detach()
+                    assert reference_before_sigmoid.shape[-1] == 2
+                    tmp[..., :2] += reference_before_sigmoid
+                outputs_coord = tmp.sigmoid()
+                outputs_classes.append(outputs_class)
+                outputs_coords.append(outputs_coord)
+                reference_points = outputs_coord.detach()
+
             if self.return_intermediate:
-                intermediate.append(self.norm(output))
+                intermediate.append(after_norm_output)
                 intermediate_reference_points.append(reference_points)
 
-        if self.norm is not None:
-            output = self.norm(output)
-            if self.return_intermediate:
-                intermediate.pop()
-                intermediate.append(output)
+        # if self.norm is not None:
+        #     output = self.norm(output)
+        #     if self.return_intermediate:
+        #         intermediate.pop()
+        #         intermediate.append(output)
 
         if self.return_intermediate:
-            if self.bbox_embed is not None:
-                return torch.stack(intermediate).transpose(1, 2), init_reference_points, torch.stack(intermediate_reference_points)
-            else:
-                return [torch.stack(intermediate).transpose(1, 2), init_reference_points, None]
+            return [torch.stack(intermediate), init_reference_points, torch.stack(intermediate_reference_points),
+                    torch.stack(outputs_coords), torch.stack(outputs_classes)]
 
         return output.unsqueeze(0)
 
@@ -271,10 +290,13 @@ class TransformerDecoder(nn.Module):
                 init_reference_points: Optional[Tensor] = None):
         output = tgt
         intermediate = []
+        intermediate_reference_points = []
+        outputs_coords = []
+        outputs_classes = []
         reference_points = init_reference_points
         # query_pos = self.adapt_pos2d(query_pos)
         for layer_id, layer in enumerate(self.layers):
-            obj_center = reference_points[..., :2].transpose(0, 1)      # [num_queries, batch_size, 2]
+            obj_center = init_reference_points[..., :2].transpose(0, 1)      # [num_queries, batch_size, 2]
 
             # For the first decoder layer, we do not apply transformation over p_s
             if layer_id == 0:
@@ -294,21 +316,44 @@ class TransformerDecoder(nn.Module):
                            memory_key_padding_mask=memory_key_padding_mask,
                            pos=pos, query_pos=query_sine_embed, query_sine_embed=query_sine_embed,
                            is_first=(layer_id == 0))
-            if self.return_intermediate:
-                intermediate.append(self.norm(output))
-                # intermediate_reference_points.append(reference_points)
 
-        if self.norm is not None:
-            output = self.norm(output)
+            if not self.with_box_refine:
+                after_norm_output = self.norm(output).transpose(0,1)
+                reference_before_sigmoid = inverse_sigmoid(init_reference_points)
+                tmp = self.bbox_embed[layer_id](after_norm_output)
+                outputs_class = self.class_embed[layer_id](after_norm_output)
+                tmp[..., :2] += reference_before_sigmoid
+                outputs_coord = tmp.sigmoid()
+                outputs_classes.append(outputs_class)
+                outputs_coords.append(outputs_coord)
+            else:
+                after_norm_output = self.norm(output).transpose(0,1)
+                reference_before_sigmoid = inverse_sigmoid(reference_points)
+                outputs_class = self.class_embed[layer_id](after_norm_output)
+                tmp = self.bbox_embed[layer_id](after_norm_output)
+                if reference_before_sigmoid.shape[-1] == 4:
+                    tmp += reference_before_sigmoid
+                else:
+                    assert reference_before_sigmoid.shape[-1] == 2
+                    tmp[..., :2] += reference_before_sigmoid
+                outputs_coord = tmp.sigmoid()
+                outputs_classes.append(outputs_class)
+                outputs_coords.append(outputs_coord)
+                reference_points = outputs_coord.detach()
+
             if self.return_intermediate:
-                intermediate.pop()
-                intermediate.append(output)
+                intermediate.append(after_norm_output)
+                intermediate_reference_points.append(reference_points)
+
+        # if self.norm is not None:
+        #     output = self.norm(output)
+        #     if self.return_intermediate:
+        #         intermediate.pop()
+        #         intermediate.append(output)
 
         if self.return_intermediate:
-            # if self.bbox_embed is not None:
-            #     return torch.stack(intermediate).transpose(1, 2), init_reference_points, torch.stack(intermediate_reference_points)
-            # else:
-            return [torch.stack(intermediate).transpose(1, 2), init_reference_points, None]
+            return [torch.stack(intermediate), init_reference_points, torch.stack(intermediate_reference_points),
+                    torch.stack(outputs_coords), torch.stack(outputs_classes)]
 
         return output.unsqueeze(0)
 class TransformerEncoderLayer(nn.Module):
@@ -557,6 +602,7 @@ def build_transformer(args):
         with_anchors=args.with_anchors,
         spatial_prior=args.spatial_prior,
         no_query_scale=args.no_query_scale,
+        with_box_refine=args.with_box_refine,
     )
 
 

@@ -66,17 +66,19 @@ class ConditionalDETR(nn.Module):
 
         num_pred = transformer.decoder.num_layers
         self.with_box_refine = with_box_refine
-        if with_box_refine:
-            self.class_embed = _get_clones(self.class_embed, num_pred)
-            self.bbox_embed = _get_clones(self.bbox_embed, num_pred)
-            nn.init.constant_(self.bbox_embed[0].layers[-1].bias.data[2:], -2.0)
-            # hack implementation for iterative bounding box refinement
-            self.transformer.decoder.bbox_embed = self.bbox_embed
-        else:
-            nn.init.constant_(self.bbox_embed.layers[-1].bias.data[2:], -2.0) # limit, init pred w,h =0.1
-            self.class_embed = nn.ModuleList([self.class_embed for _ in range(num_pred)])
-            self.bbox_embed = nn.ModuleList([self.bbox_embed for _ in range(num_pred)])
-            self.transformer.decoder.bbox_embed = None
+        # if with_box_refine:
+        #     self.class_embed = _get_clones(self.class_embed, num_pred)
+        #     self.bbox_embed = _get_clones(self.bbox_embed, num_pred)
+        #     nn.init.constant_(self.bbox_embed[0].layers[-1].bias.data[2:], -2.0)
+        #     # hack implementation for iterative bounding box refinement
+        #     self.transformer.decoder.bbox_embed = self.bbox_embed
+        #     self.transformer.decoder.class_embed = self.class_embed
+        # else:
+        nn.init.constant_(self.bbox_embed.layers[-1].bias.data[2:], -2.0) # limit, init pred w,h =0.1
+        self.class_embed = nn.ModuleList([self.class_embed for _ in range(num_pred)])
+        self.bbox_embed = nn.ModuleList([self.bbox_embed for _ in range(num_pred)])
+        self.transformer.decoder.bbox_embed = self.bbox_embed
+        self.transformer.decoder.class_embed = self.class_embed
 
 
     def forward(self, samples: NestedTensor):
@@ -102,42 +104,41 @@ class ConditionalDETR(nn.Module):
         query_embeds = None
         if not self.with_anchors:
             query_embeds = self.query_embed.weight
-        hs, init_reference, inter_references = self.transformer(self.input_proj(src), mask, query_embeds, pos[-1])
-        if not self.with_box_refine:
-            reference_before_sigmoid = inverse_sigmoid(init_reference)
-            outputs_coords = []
-            outputs_classes = []
-            for lvl in range(hs.shape[0]):
-                tmp = self.bbox_embed[lvl](hs[lvl])
-                outputs_class = self.class_embed[lvl](hs[lvl])
-                tmp[..., :2] += reference_before_sigmoid
-                outputs_coord = tmp.sigmoid()
-                outputs_classes.append(outputs_class)
-                outputs_coords.append(outputs_coord)
-            outputs_coord = torch.stack(outputs_coords)
-            outputs_class = torch.stack(outputs_classes)
-        else:
-            outputs_classes = []
-            outputs_coords = []
-            for lvl in range(hs.shape[0]):
-                if lvl == 0:
-                    reference = init_reference
-                else:
-                    reference = inter_references[lvl - 1]
-                reference = inverse_sigmoid(reference)
-                outputs_class = self.class_embed[lvl](hs[lvl])
-                tmp = self.bbox_embed[lvl](hs[lvl])
-                if reference.shape[-1] == 4:
-                    tmp += reference
-                else:
-                    assert reference.shape[-1] == 2
-                    tmp[..., :2] += reference
-                outputs_coord = tmp.sigmoid()
-                outputs_classes.append(outputs_class)
-                outputs_coords.append(outputs_coord)
-            outputs_class = torch.stack(outputs_classes)
-            outputs_coord = torch.stack(outputs_coords)
-
+        hs, init_reference, inter_references, outputs_coord,  outputs_class= self.transformer(self.input_proj(src), mask, query_embeds, pos[-1])
+        # if not self.with_box_refine:
+        #     reference_before_sigmoid = inverse_sigmoid(init_reference)
+        #     tmpoutputs_coords = []
+        #     tmpoutputs_classes = []
+        #     for lvl in range(hs.shape[0]):
+        #         tmp = self.bbox_embed[lvl](hs[lvl])
+        #         tmpoutputs_class = self.class_embed[lvl](hs[lvl])
+        #         tmp[..., :2] += reference_before_sigmoid
+        #         tmpoutputs_coord = tmp.sigmoid()
+        #         tmpoutputs_classes.append(tmpoutputs_class)
+        #         tmpoutputs_coords.append(tmpoutputs_coord)
+        #     tmpoutputs_coord = torch.stack(tmpoutputs_coords)
+        #     tmpoutputs_class = torch.stack(tmpoutputs_classes)
+        # else:
+        #     tmpoutputs_classes = []
+        #     tmpoutputs_coords = []
+        #     for lvl in range(hs.shape[0]):
+        #         if lvl == 0:
+        #             reference = init_reference
+        #         else:
+        #             reference = inter_references[lvl - 1]
+        #         reference = inverse_sigmoid(reference)
+        #         tmpoutputs_class = self.class_embed[lvl](hs[lvl])
+        #         tmp = self.bbox_embed[lvl](hs[lvl])
+        #         if reference.shape[-1] == 4:
+        #             tmp += reference
+        #         else:
+        #             assert reference.shape[-1] == 2
+        #             tmp[..., :2] += reference
+        #         tmpoutputs_coord = tmp.sigmoid()
+        #         tmpoutputs_classes.append(tmpoutputs_class)
+        #         tmpoutputs_coords.append(tmpoutputs_coord)
+        #     tmpoutputs_class = torch.stack(tmpoutputs_classes)
+        #     tmpoutputs_coord = torch.stack(tmpoutputs_coords)
         out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
         if self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
