@@ -95,8 +95,8 @@ class Transformer(nn.Module):
             if self.spatial_prior == "learned":
                 nn.init.uniform_(self.position.weight.data, 0, 1)
         else:
-            nn.init.xavier_uniform_(self.decoder.ref_point_head.weight.data, gain=1.0)
-            nn.init.constant_(self.decoder.ref_point_head.bias.data, 0.)
+            nn.init.xavier_uniform_(self.decoder.ref_point_head.layers[-1].weight.data, gain=1.0)
+            nn.init.constant_(self.decoder.ref_point_head.layers[-1].bias.data, 0.)
             
 
     def forward(self, src, mask, query_embed, pos_embed):
