@@ -244,6 +244,7 @@ class TransformerDecoder(nn.Module):
                            memory_key_padding_mask=memory_key_padding_mask,
                            pos=pos, query_pos=query_pos, query_sine_embed=query_sine_embed,
                            is_first=(layer_id == 0))
+            import pdb;pdb.set_trace()
             if not self.with_box_refine:
                 after_norm_output = self.norm(output).transpose(0,1)
                 reference_before_sigmoid = inverse_sigmoid(init_reference_points)
