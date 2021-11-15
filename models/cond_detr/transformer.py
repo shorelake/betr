@@ -176,7 +176,12 @@ class TransformerDecoder(nn.Module):
 
         if not with_anchors:
             self.ref_point_head = MLP(d_model, d_model, 2, 2)
-
+        else:
+            self.adapt_pos2d = nn.Sequential(
+                                    nn.Linear(d_model, d_model),
+                                    nn.ReLU(),
+                                    nn.Linear(d_model, d_model),
+                                )
         self.bbox_embed = None
         for layer_id in range(num_layers - 1):
             self.layers[layer_id + 1].ca_qpos_proj = None
@@ -265,6 +270,7 @@ class TransformerDecoder(nn.Module):
         output = tgt
         intermediate = []
         reference_points = init_reference_points
+        query_pos = self.adapt_pos2d(query_pos)
         for layer_id, layer in enumerate(self.layers):
             obj_center = reference_points[..., :2].transpose(0, 1)      # [num_queries, batch_size, 2]
 
