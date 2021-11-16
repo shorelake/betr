@@ -14,6 +14,8 @@ from typing import Optional, List
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
+
+from dev_models.ops.test import P
 from .attention import MultiheadAttention
 from util.misc import inverse_sigmoid
 class MLP(nn.Module):
@@ -55,9 +57,14 @@ class Transformer(nn.Module):
                  with_anchors=False, num_query_pattern=1,spatial_prior="grid",
                  num_query_position = 300, no_query_scale=False,
                  # with box refine param
-                 with_box_refine=False):
+                 with_box_refine=False,
+                 # num_feature_level
+                 num_feature_levels=1):
         super().__init__()
-
+        self.num_feature_levels = num_feature_levels
+        if num_feature_levels > 1:
+            self.level_embed = nn.Parameter(torch.Tensor(num_feature_levels, d_model))
+            torch.nn.init.normal_(self.level_embed)
         # for with_anchors
         self.with_anchors = with_anchors
         if with_anchors:
@@ -101,12 +108,32 @@ class Transformer(nn.Module):
             
 
     def forward(self, src, mask, query_embed, pos_embed):
-        # flatten NxCxHxW to HWxNxC
-        bs, c, h, w = src.shape
-        src = src.flatten(2).permute(2, 0, 1)
-        pos_embed = pos_embed.flatten(2).permute(2, 0, 1)
-        mask = mask.flatten(1)
-        memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)
+        # import pdb;pdb.set_trace()
+        if self.num_feature_levels == 1:
+            # flatten NxCxHxW to HWxNxC
+            bs, c, h, w = src.shape
+            src = src.flatten(2).permute(2, 0, 1)
+            pos_embed = pos_embed.flatten(2).permute(2, 0, 1)
+            mask = mask.flatten(1)
+            memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)
+        else:
+            src_flatten = []
+            mask_flatten = []
+            lvl_pos_embed_flatten = []
+            for lvl, (lvl_src, lvl_mask, lvl_pos_embed) in enumerate(zip(src, mask, pos_embed)):
+                bs, c, h, w = lvl_src.shape
+                lvl_src = lvl_src.flatten(2).permute(2, 0, 1)
+                lvl_mask = lvl_mask.flatten(1)
+                lvl_pos_embed = lvl_pos_embed.flatten(2).permute(2, 0, 1)
+                lvl_pos_embed = lvl_pos_embed + self.level_embed[lvl].view(1, 1, -1)
+                lvl_pos_embed_flatten.append(lvl_pos_embed)
+                src_flatten.append(lvl_src)
+                mask_flatten.append(lvl_mask)
+            src = torch.cat(src_flatten, 0)
+            mask = torch.cat(mask_flatten, 1)
+            pos_embed = torch.cat(lvl_pos_embed_flatten, 0)
+            memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)
+
         if not self.with_anchors:
             query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)
             
@@ -632,6 +659,7 @@ def build_transformer(args):
         spatial_prior=args.spatial_prior,
         no_query_scale=args.no_query_scale,
         with_box_refine=args.with_box_refine,
+        num_feature_levels=args.num_feature_levels,
     )
 
 
