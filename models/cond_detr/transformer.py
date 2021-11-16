@@ -66,7 +66,7 @@ class Transformer(nn.Module):
             self.num_position = num_query_position
             # self.pattern = nn.Embedding(self.num_pattern, d_model)
             if self.spatial_prior == "learned":
-                self.position = nn.Embedding(self.num_position, 2)
+                self.position = nn.Embedding(self.num_position, 4)
 
         encoder_layer = TransformerEncoderLayer(d_model, nhead, dim_feedforward,
                                                 dropout, activation, normalize_before)
@@ -93,7 +93,8 @@ class Transformer(nn.Module):
                 nn.init.xavier_uniform_(p)
         if self.with_anchors:
             if self.spatial_prior == "learned":
-                nn.init.uniform_(self.position.weight.data, 0, 1)
+                nn.init.uniform_(self.position.weight.data[:, :2], 0, 1)
+                nn.init.constant_(self.position.weight.data[:, 2:], 0.1)
         # else:
         #     nn.init.xavier_uniform_(self.decoder.ref_point_head.layers[-1].weight.data, gain=1.0)
         #     nn.init.constant_(self.decoder.ref_point_head.layers[-1].bias.data, 0.)
@@ -135,13 +136,13 @@ class Transformer(nn.Module):
                 reference_points = reference_points.unsqueeze(0).repeat(bs, self.num_pattern, 1)
             else:
                 raise ValueError(f'unknown {self.spatial_prior} spatial prior')
-            query_pos = pos2posemb2d(reference_points.squeeze(2))
-            query_pos = query_pos.transpose(0,1)
-            tgt = torch.zeros_like(query_pos)
-            # _, num_q, _ = reference_points.shape
-            # tgt = torch.zeros([num_q,bs,self.d_model],device=memory.device)
+            # query_pos = pos2posemb2d(reference_points.squeeze(2))
+            # query_pos = query_pos.transpose(0,1)
+            # tgt = torch.zeros_like(query_pos)
+            _, num_q, _ = reference_points.shape
+            tgt = torch.zeros([num_q,bs,self.d_model],device=memory.device)
             hs, init_reference, inter_references, outputs_coord,  outputs_class = self.decoder.forward_anchors(tgt, memory, memory_key_padding_mask=mask,pos=pos_embed,
-                                                                                query_pos=query_pos, init_reference_points=reference_points)
+                                                                                    init_reference_points=reference_points)
 
         return hs, init_reference, inter_references, outputs_coord,  outputs_class
 
@@ -189,22 +190,22 @@ class TransformerDecoder(nn.Module):
         if not with_anchors:
             self.ref_point_head = MLP(d_model, d_model, 2, 2)
         else:
-            self.adapt_pos2d = nn.Sequential(
-                                    nn.Linear(d_model, d_model),
+            # self.adapt_pos2d = nn.Sequential(
+            #                         nn.Linear(d_model, d_model),
+            #                         nn.ReLU(),
+            #                         nn.Linear(d_model, d_model),
+            #                     )
+            self.adapt_pos4d = nn.Sequential(
+                                    nn.Linear(2*d_model, d_model),
                                     nn.ReLU(),
                                     nn.Linear(d_model, d_model),
+                                    nn.ReLU(),
                                 )
         self.bbox_embed = None
         self.class_embed = None
         for layer_id in range(num_layers - 1):
             self.layers[layer_id + 1].ca_qpos_proj = None
         
-        # if with_anchors:
-        #     self.adapt_pos2d = nn.Sequential(
-        #                             nn.Linear(d_model, d_model),
-        #                             nn.ReLU(),
-        #                             nn.Linear(d_model, d_model),
-        #                         )
     def forward(self, tgt, memory,
                 tgt_mask: Optional[Tensor] = None,
                 memory_mask: Optional[Tensor] = None,
@@ -298,9 +299,13 @@ class TransformerDecoder(nn.Module):
         outputs_coords = []
         outputs_classes = []
         reference_points = init_reference_points
-        query_pos = self.adapt_pos2d(query_pos)
+         
+        # import pdb;pdb.set_trace()
+        
         for layer_id, layer in enumerate(self.layers):
-            obj_center = init_reference_points[..., :2].transpose(0, 1)      # [num_queries, batch_size, 2]
+            query_pos = pos2posemb4d(reference_points).transpose(0,1) # num_queries, batch_size, hidden_dim
+            query_pos = self.adapt_pos4d(query_pos)
+            obj_center = reference_points[..., :2].transpose(0, 1)      # [num_queries, batch_size, 2]
 
             # For the first decoder layer, we do not apply transformation over p_s
             if layer_id == 0:
@@ -326,7 +331,11 @@ class TransformerDecoder(nn.Module):
                 reference_before_sigmoid = inverse_sigmoid(init_reference_points)
                 tmp = self.bbox_embed[layer_id](after_norm_output)
                 outputs_class = self.class_embed[layer_id](after_norm_output)
-                tmp[..., :2] += reference_before_sigmoid
+                if reference_before_sigmoid.shape[-1] == 4:
+                    tmp += reference_before_sigmoid
+                else:
+                    assert reference_before_sigmoid.shape[-1] == 2
+                    tmp[..., :2] += reference_before_sigmoid
                 outputs_coord = tmp.sigmoid()
                 outputs_classes.append(outputs_class)
                 outputs_coords.append(outputs_coord)
@@ -590,6 +599,22 @@ def pos2posemb2d(pos, num_pos_feats=128, temperature=10000):
     pos_x = torch.stack((pos_x[..., 0::2].sin(), pos_x[..., 1::2].cos()), dim=-1).flatten(-2)
     pos_y = torch.stack((pos_y[..., 0::2].sin(), pos_y[..., 1::2].cos()), dim=-1).flatten(-2)
     posemb = torch.cat((pos_y, pos_x), dim=-1)
+    return posemb
+
+def pos2posemb4d(pos, num_pos_feats=128, temperature=10000):
+    scale = 2 * math.pi
+    pos = pos * scale
+    dim_t = torch.arange(num_pos_feats, dtype=torch.float32, device=pos.device)
+    dim_t = temperature ** (2 * (dim_t // 2) / num_pos_feats)
+    pos_x = pos[..., 0, None] / dim_t
+    pos_y = pos[..., 1, None] / dim_t
+    pos_w = pos[..., 2, None] / dim_t
+    pos_h = pos[..., 3, None] / dim_t
+    pos_x = torch.stack((pos_x[..., 0::2].sin(), pos_x[..., 1::2].cos()), dim=-1).flatten(-2)
+    pos_y = torch.stack((pos_y[..., 0::2].sin(), pos_y[..., 1::2].cos()), dim=-1).flatten(-2)
+    pos_w = torch.stack((pos_w[..., 0::2].sin(), pos_w[..., 1::2].cos()), dim=-1).flatten(-2)
+    pos_h = torch.stack((pos_h[..., 0::2].sin(), pos_h[..., 1::2].cos()), dim=-1).flatten(-2)
+    posemb = torch.cat((pos_y, pos_x, pos_h, pos_w), dim=-1)
     return posemb
 
 def build_transformer(args):
