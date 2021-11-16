@@ -94,9 +94,9 @@ class Transformer(nn.Module):
         if self.with_anchors:
             if self.spatial_prior == "learned":
                 nn.init.uniform_(self.position.weight.data, 0, 1)
-        else:
-            nn.init.xavier_uniform_(self.decoder.ref_point_head.layers[-1].weight.data, gain=1.0)
-            nn.init.constant_(self.decoder.ref_point_head.layers[-1].bias.data, 0.)
+        # else:
+        #     nn.init.xavier_uniform_(self.decoder.ref_point_head.layers[-1].weight.data, gain=1.0)
+        #     nn.init.constant_(self.decoder.ref_point_head.layers[-1].bias.data, 0.)
             
 
     def forward(self, src, mask, query_embed, pos_embed):
@@ -135,13 +135,13 @@ class Transformer(nn.Module):
                 reference_points = reference_points.unsqueeze(0).repeat(bs, self.num_pattern, 1)
             else:
                 raise ValueError(f'unknown {self.spatial_prior} spatial prior')
-            # query_pos = pos2posemb2d(reference_points.squeeze(2))
-            # query_pos = query_pos.transpose(0,1)
-            # tgt = torch.zeros_like(query_pos)
-            _, num_q, _ = reference_points.shape
-            tgt = torch.zeros([num_q,bs,self.d_model],device=memory.device)
+            query_pos = pos2posemb2d(reference_points.squeeze(2))
+            query_pos = query_pos.transpose(0,1)
+            tgt = torch.zeros_like(query_pos)
+            # _, num_q, _ = reference_points.shape
+            # tgt = torch.zeros([num_q,bs,self.d_model],device=memory.device)
             hs, init_reference, inter_references, outputs_coord,  outputs_class = self.decoder.forward_anchors(tgt, memory, memory_key_padding_mask=mask,pos=pos_embed,
-                                                                                init_reference_points=reference_points)
+                                                                                query_pos=query_pos, init_reference_points=reference_points)
 
         return hs, init_reference, inter_references, outputs_coord,  outputs_class
 
@@ -188,12 +188,12 @@ class TransformerDecoder(nn.Module):
 
         if not with_anchors:
             self.ref_point_head = MLP(d_model, d_model, 2, 2)
-        # else:
-        #     self.adapt_pos2d = nn.Sequential(
-        #                             nn.Linear(d_model, d_model),
-        #                             nn.ReLU(),
-        #                             nn.Linear(d_model, d_model),
-        #                         )
+        else:
+            self.adapt_pos2d = nn.Sequential(
+                                    nn.Linear(d_model, d_model),
+                                    nn.ReLU(),
+                                    nn.Linear(d_model, d_model),
+                                )
         self.bbox_embed = None
         self.class_embed = None
         for layer_id in range(num_layers - 1):
@@ -244,7 +244,6 @@ class TransformerDecoder(nn.Module):
                            memory_key_padding_mask=memory_key_padding_mask,
                            pos=pos, query_pos=query_pos, query_sine_embed=query_sine_embed,
                            is_first=(layer_id == 0))
-            import pdb;pdb.set_trace()
             if not self.with_box_refine:
                 after_norm_output = self.norm(output).transpose(0,1)
                 reference_before_sigmoid = inverse_sigmoid(init_reference_points)
@@ -299,7 +298,7 @@ class TransformerDecoder(nn.Module):
         outputs_coords = []
         outputs_classes = []
         reference_points = init_reference_points
-        # query_pos = self.adapt_pos2d(query_pos)
+        query_pos = self.adapt_pos2d(query_pos)
         for layer_id, layer in enumerate(self.layers):
             obj_center = init_reference_points[..., :2].transpose(0, 1)      # [num_queries, batch_size, 2]
 
@@ -319,7 +318,7 @@ class TransformerDecoder(nn.Module):
                            memory_mask=memory_mask,
                            tgt_key_padding_mask=tgt_key_padding_mask,
                            memory_key_padding_mask=memory_key_padding_mask,
-                           pos=pos, query_pos=query_sine_embed, query_sine_embed=query_sine_embed,
+                           pos=pos, query_pos=query_pos, query_sine_embed=query_sine_embed,
                            is_first=(layer_id == 0))
 
             if not self.with_box_refine:

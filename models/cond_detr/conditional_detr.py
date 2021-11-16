@@ -74,7 +74,7 @@ class ConditionalDETR(nn.Module):
             self.transformer.decoder.bbox_embed = self.bbox_embed
             self.transformer.decoder.class_embed = self.class_embed
         else:
-            nn.init.constant_(self.bbox_embed.layers[-1].bias.data[2:], -2.0) # limit, init pred w,h =0.1
+            # nn.init.constant_(self.bbox_embed.layers[-1].bias.data[2:], -2.0) # limit, init pred w,h =0.1
             self.class_embed = nn.ModuleList([self.class_embed for _ in range(num_pred)])
             self.bbox_embed = nn.ModuleList([self.bbox_embed for _ in range(num_pred)])
             self.transformer.decoder.bbox_embed = self.bbox_embed
@@ -139,6 +139,7 @@ class ConditionalDETR(nn.Module):
         #         tmpoutputs_coords.append(tmpoutputs_coord)
         #     tmpoutputs_class = torch.stack(tmpoutputs_classes)
         #     tmpoutputs_coord = torch.stack(tmpoutputs_coords)
+        # import pdb;pdb.set_trace()
         out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
         if self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
