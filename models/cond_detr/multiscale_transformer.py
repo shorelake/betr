@@ -103,9 +103,10 @@ class Transformer(nn.Module):
             if self.spatial_prior == "learned":
                 nn.init.uniform_(self.position.weight.data[:, :2], 0, 1)
                 nn.init.constant_(self.position.weight.data[:, 2:], 0.1)
-        # else:
-        #     nn.init.xavier_uniform_(self.decoder.ref_point_head.layers[-1].weight.data, gain=1.0)
-        #     nn.init.constant_(self.decoder.ref_point_head.layers[-1].bias.data, 0.)
+        else:
+            # reference box, wh init as 0.5
+            nn.init.constant_(self.decoder.ref_point_head.layers[-1].weight.data[2:,:],0) 
+            nn.init.constant_(self.decoder.ref_point_head.layers[-1].bias.data[2:], 0.)
             
 
     def forward(self, src, mask, query_embed, pos_embed):
@@ -145,9 +146,10 @@ class Transformer(nn.Module):
         if not self.with_anchors:
             query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)
             num_q, bs, _ = query_embed.shape
-            decoder_scale = torch.tensor(self.decoder_scales[0], device=query_embed.device)
-            query_scale_embed = scale2scaleemb1d(decoder_scale)
-            query_scale_embed = query_scale_embed.unsqueeze(0).unsqueeze(0).repeat(num_q,bs,1)
+            query_scale_embed = None
+            # decoder_scale = torch.tensor(self.decoder_scales[0], device=query_embed.device)
+            # query_scale_embed = scale2scaleemb1d(decoder_scale)
+            # query_scale_embed = query_scale_embed.unsqueeze(0).unsqueeze(0).repeat(num_q,bs,1)
 
             tgt = torch.zeros_like(query_embed)
             
@@ -228,7 +230,7 @@ class TransformerDecoder(nn.Module):
             self.query_scale_embed_scale = MLP(d_model, d_model, d_model, 2)
 
         if not with_anchors:
-            self.ref_point_head = MLP(d_model, d_model, 2, 2)
+            self.ref_point_head = MLP(d_model, d_model, 4, 2)
         else:
             # self.adapt_pos2d = nn.Sequential(
             #                         nn.Linear(d_model, d_model),
@@ -262,8 +264,11 @@ class TransformerDecoder(nn.Module):
         intermediate_reference_points = []
         outputs_coords = []
         outputs_classes = []
-        init_reference_points_before_sigmoid = self.ref_point_head(query_pos)    # [num_queries, batch_size, 2]
-        init_reference_points = init_reference_points_before_sigmoid.sigmoid().transpose(0, 1)
+        init_reference_box_before_sigmoid = self.ref_point_head(query_pos)    # [num_queries, batch_size, 2]
+        init_reference_box = init_reference_box_before_sigmoid.sigmoid().transpose(0, 1)
+        init_reference_points = init_reference_box[...,:2]
+        init_reference_scales = torch.sqrt(init_reference_box[...,2] * init_reference_box[...,3])
+        query_scale = scale2scaleemb1d(init_reference_scales).transpose(0,1)
         # intermediate_reference_points.append(init_reference_points)
         reference_points = init_reference_points
         for layer_id, layer in enumerate(self.layers):
@@ -282,7 +287,7 @@ class TransformerDecoder(nn.Module):
                     scale_transformation = 1
 
             # get sine embedding for the query vector
-            query_sine_embed = gen_sineembed_for_position(obj_center)     
+            query_sine_embed = gen_sineembed_for_position(obj_center)   
             # apply transformation
             query_sine_embed = query_sine_embed * pos_transformation
             query_scale = query_scale * scale_transformation
@@ -295,16 +300,20 @@ class TransformerDecoder(nn.Module):
                            is_first=(layer_id == 0))
             if not self.with_box_refine:
                 after_norm_output = self.norm(output).transpose(0,1)
-                reference_before_sigmoid = inverse_sigmoid(init_reference_points)
+                reference_before_sigmoid = inverse_sigmoid(init_reference_box)
                 tmp = self.bbox_embed[layer_id](after_norm_output)
                 outputs_class = self.class_embed[layer_id](after_norm_output)
-                tmp[..., :2] += reference_before_sigmoid
+                if reference_before_sigmoid.shape[-1] == 4:
+                    tmp += reference_before_sigmoid
+                else:
+                    assert reference_before_sigmoid.shape[-1] == 2
+                    tmp[..., :2] += reference_before_sigmoid
                 outputs_coord = tmp.sigmoid()
                 outputs_classes.append(outputs_class)
                 outputs_coords.append(outputs_coord)
-                update_query_scale = outputs_coord[...,2] * outputs_coord[...,3]
-                update_query_scale = scale2scaleemb1d(update_query_scale).transpose(0,1)
-                query_scale = update_query_scale.detach()
+                # update_query_scale = outputs_coord[...,2] * outputs_coord[...,3]
+                # update_query_scale = scale2scaleemb1d(update_query_scale).transpose(0,1)
+                # query_scale = update_query_scale.detach()
             else:
                 after_norm_output = self.norm(output).transpose(0,1)
                 reference_before_sigmoid = inverse_sigmoid(reference_points)
