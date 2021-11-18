@@ -100,7 +100,7 @@ class Transformer(nn.Module):
         if self.with_anchors:
             if self.spatial_prior == "learned":
                 nn.init.uniform_(self.position.weight.data[:, :2], 0, 1)
-                nn.init.constant_(self.position.weight.data[:, 2:], 0.1)
+                nn.init.constant_(self.position.weight.data[:, 2:], 0.5)
         # else:
         #     nn.init.xavier_uniform_(self.decoder.ref_point_head.layers[-1].weight.data, gain=1.0)
         #     nn.init.constant_(self.decoder.ref_point_head.layers[-1].bias.data, 0.)
@@ -332,7 +332,6 @@ class TransformerDecoder(nn.Module):
             query_pos = pos2posemb4d(reference_points).transpose(0,1) # num_queries, batch_size, hidden_dim
             query_pos = self.adapt_pos4d(query_pos)
             obj_center = reference_points[..., :2].transpose(0, 1)      # [num_queries, batch_size, 2]
-
             # For the first decoder layer, we do not apply transformation over p_s
             if layer_id == 0:
                 pos_transformation = 1
