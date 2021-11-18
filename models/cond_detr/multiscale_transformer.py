@@ -15,7 +15,6 @@ import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
 
-from dev_models.ops.test import P
 from .attention import MultiheadAttention
 from util.misc import inverse_sigmoid
 class MLP(nn.Module):
@@ -226,6 +225,7 @@ class TransformerDecoder(nn.Module):
         self.no_query_scale = no_query_scale
         if not no_query_scale:
             self.query_scale = MLP(d_model, d_model, d_model, 2)
+            self.query_scale_embed_scale = MLP(d_model, d_model, d_model, 2)
 
         if not with_anchors:
             self.ref_point_head = MLP(d_model, d_model, 2, 2)
@@ -272,16 +272,20 @@ class TransformerDecoder(nn.Module):
             # For the first decoder layer, we do not apply transformation over p_s
             if layer_id == 0:
                 pos_transformation = 1
+                scale_transformation = 1
             else:
                 if not self.no_query_scale:
                     pos_transformation = self.query_scale(output)
+                    scale_transformation = self.query_scale_embed_scale(output)
                 else:
                     pos_transformation = 1
+                    scale_transformation = 1
 
             # get sine embedding for the query vector
             query_sine_embed = gen_sineembed_for_position(obj_center)     
             # apply transformation
             query_sine_embed = query_sine_embed * pos_transformation
+            query_scale = query_scale * scale_transformation
             output = layer(output, memory, tgt_mask=tgt_mask,
                            memory_mask=memory_mask,
                            tgt_key_padding_mask=tgt_key_padding_mask,

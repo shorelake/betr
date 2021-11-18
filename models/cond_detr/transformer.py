@@ -15,7 +15,6 @@ import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
 
-from dev_models.ops.test import P
 from .attention import MultiheadAttention
 from util.misc import inverse_sigmoid
 class MLP(nn.Module):
