@@ -212,6 +212,7 @@ class TransformerDecoder(nn.Module):
         self.no_query_scale = no_query_scale
         if not no_query_scale:
             self.query_scale = MLP(d_model, d_model, d_model, 2)
+            self.query_scale = MLP(95, d_model, d_model, 2)
 
         if not with_anchors:
             self.ref_point_head = MLP(d_model, d_model, 2, 2)
@@ -255,11 +256,11 @@ class TransformerDecoder(nn.Module):
             # For the first decoder layer, we do not apply transformation over p_s
             if layer_id == 0:
                 pos_transformation = 1
-            else:
-                if not self.no_query_scale:
-                    pos_transformation = self.query_scale(output)
-                else:
-                    pos_transformation = 1
+            # else:
+            #     if not self.no_query_scale:
+            #         pos_transformation = self.query_scale(output)
+            #     else:
+            #         pos_transformation = 1
 
             # get sine embedding for the query vector
             query_sine_embed = gen_sineembed_for_position(obj_center)     
@@ -272,6 +273,7 @@ class TransformerDecoder(nn.Module):
                            pos=pos, query_pos=query_pos, query_sine_embed=query_sine_embed,
                            is_first=(layer_id == 0))
             if not self.with_box_refine:
+
                 after_norm_output = self.norm(output).transpose(0,1)
                 reference_before_sigmoid = inverse_sigmoid(init_reference_points)
                 tmp = self.bbox_embed[layer_id](after_norm_output)
@@ -280,7 +282,16 @@ class TransformerDecoder(nn.Module):
                 outputs_coord = tmp.sigmoid()
                 outputs_classes.append(outputs_class)
                 outputs_coords.append(outputs_coord)
+                # import pdb;pdb.set_trace()
+                if not self.no_query_scale:
+                    # pos_transformation = self.query_scale(output)
+                    conditioned_input = torch.cat([outputs_class, tmp], dim=2).transpose(0,1)
+                    # conditioned_input = conditioned_input.detach()
+                    pos_transformation = self.query_scale(conditioned_input)
+                else:
+                    pos_transformation = 1
             else:
+
                 after_norm_output = self.norm(output).transpose(0,1)
                 reference_before_sigmoid = inverse_sigmoid(reference_points)
                 outputs_class = self.class_embed[layer_id](after_norm_output)
@@ -294,6 +305,10 @@ class TransformerDecoder(nn.Module):
                 outputs_classes.append(outputs_class)
                 outputs_coords.append(outputs_coord)
                 reference_points = outputs_coord.detach()
+                if not self.no_query_scale:
+                    pos_transformation = self.query_scale(output)
+                else:
+                    pos_transformation = 1
 
             if self.return_intermediate:
                 intermediate.append(after_norm_output)
