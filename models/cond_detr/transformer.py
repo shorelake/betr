@@ -211,8 +211,9 @@ class TransformerDecoder(nn.Module):
         self.return_intermediate = return_intermediate
         self.no_query_scale = no_query_scale
         if not no_query_scale:
-            self.query_scale = MLP(d_model, d_model, d_model, 2)
-            self.query_scale = MLP(95, d_model, d_model, 2)
+            # self.query_scale = MLP(d_model, d_model, d_model, 2)
+            # self.query_scale = MLP(95, d_model, d_model, 2)
+            self.query_scale = MLP(4, d_model, d_model, 2)
 
         if not with_anchors:
             self.ref_point_head = MLP(d_model, d_model, 2, 2)
@@ -285,9 +286,14 @@ class TransformerDecoder(nn.Module):
                 # import pdb;pdb.set_trace()
                 if not self.no_query_scale:
                     # pos_transformation = self.query_scale(output)
-                    conditioned_input = torch.cat([outputs_class, tmp], dim=2).transpose(0,1)
+                    # conditioned_input = torch.cat([outputs_class, tmp], dim=2).transpose(0,1)
                     # conditioned_input = conditioned_input.detach()
+                    # pos_transformation = self.query_scale(conditioned_input)
+
+                    conditioned_input = tmp.transpose(0,1)
                     pos_transformation = self.query_scale(conditioned_input)
+                    # conditioned_input = pos2posemb4d(outputs_coord.transpose(0,1),num_pos_feats=64)
+                    # pos_transformation = self.query_scale(conditioned_input)
                 else:
                     pos_transformation = 1
             else:
