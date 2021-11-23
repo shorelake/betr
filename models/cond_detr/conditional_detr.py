@@ -33,7 +33,7 @@ def _get_clones(module, N):
 class ConditionalDETR(nn.Module):
     """ This is the Conditional DETR module that performs object detection """
     def __init__(self, backbone, transformer, num_classes, num_queries, num_feature_levels,
-                 aux_loss=False, with_box_refine=False, with_anchors=False):
+                 aux_loss=False, with_box_refine=False, with_anchors=False, with_pnp_sampler=False):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -53,54 +53,16 @@ class ConditionalDETR(nn.Module):
         self.num_feature_levels = num_feature_levels
         if not with_anchors:
             self.query_embed = nn.Embedding(num_queries, hidden_dim)
-        if num_feature_levels > 1:
-            num_backbone_outs = len(backbone.strides)
-            input_proj_list = []
-            for _ in range(num_backbone_outs):
-                in_channels = backbone.num_channels[_]
-                input_proj_list.append(nn.Sequential(
-                    nn.Conv2d(in_channels, hidden_dim, kernel_size=1),
-                    nn.GroupNorm(32, hidden_dim),
-                ))
-            self.input_proj = nn.ModuleList(input_proj_list)
-            for proj in self.input_proj:
-                nn.init.xavier_uniform_(proj[0].weight, gain=1)
-                nn.init.constant_(proj[0].bias, 0)
-
-            self.level_embed = nn.Parameter(torch.Tensor(num_feature_levels, hidden_dim))
-            torch.nn.init.normal_(self.level_embed)
-        else:
-            self.input_proj = nn.Conv2d(backbone.num_channels[0], hidden_dim, kernel_size=1)
+        self.input_proj = nn.Conv2d(backbone.num_channels[0], hidden_dim, kernel_size=1)
         self.backbone = backbone
         self.aux_loss = aux_loss
 
-        # # init prior_prob setting for focal loss
-        # prior_prob = 0.01
-        # bias_value = -math.log((1 - prior_prob) / prior_prob)
-        # self.class_embed.bias.data = torch.ones(num_classes) * bias_value
-
-        # # init bbox_mebed
-        # nn.init.constant_(self.bbox_embed.layers[-1].weight.data, 0)
-        # nn.init.constant_(self.bbox_embed.layers[-1].bias.data, 0)
-
-        # num_pred = transformer.decoder.num_layers
         self.with_box_refine = with_box_refine
-        # if with_box_refine:
-        #     self.class_embed = _get_clones(self.class_embed, num_pred)
-        #     self.bbox_embed = _get_clones(self.bbox_embed, num_pred)
-        #     nn.init.constant_(self.bbox_embed[0].layers[-1].bias.data[2:], -2.0)
-        #     # hack implementation for iterative bounding box refinement
-        #     self.transformer.decoder.bbox_embed = self.bbox_embed
-        #     self.transformer.decoder.class_embed = self.class_embed
-        # else:
-            # nn.init.constant_(self.bbox_embed.layers[-1].bias.data[2:], -2.0) # limit, init pred w,h =0.1
-        # self.class_embed = nn.ModuleList([self.class_embed for _ in range(num_pred)])
-        # self.bbox_embed = nn.ModuleList([self.bbox_embed for _ in range(num_pred)])
-        # self.transformer.decoder.bbox_embed = self.bbox_embed
-        # self.transformer.decoder.class_embed = self.class_embed
+
+        self.with_pnp_sampler = with_pnp_sampler
 
 
-    def forward(self, samples: NestedTensor):
+    def forward(self, samples: NestedTensor, sample_ratio=None):
         """ The forward expects a NestedTensor, which consists of:
                - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
                - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
@@ -125,18 +87,11 @@ class ConditionalDETR(nn.Module):
             src, mask = features[-1].decompose()
             assert mask is not None
             src = self.input_proj(src)
-            hs, init_reference, inter_references, outputs_coord,  outputs_class= self.transformer(src, mask, query_embeds, pos[-1])
-        else:
-            srcs = []
-            masks = []
-            poses = []
-            for l, (feat,lvl_pos) in enumerate(zip(features,pos)):
-                src, mask = feat.decompose()
-                srcs.append(self.input_proj[l](src))
-                masks.append(mask)
-                assert mask is not None
-                poses.append(lvl_pos)
-            hs, init_reference, inter_references, outputs_coord,  outputs_class= self.transformer(srcs, masks, query_embeds, poses)
+            if self.with_pnp_sampler:
+                import pdb;pdb.set_trace()
+                hs, init_reference, inter_references, outputs_coord,  outputs_class, sample_reg_loss= self.transformer(src, mask, query_embeds, pos[-1], sample_ratio)
+            else:
+                hs, init_reference, inter_references, outputs_coord,  outputs_class= self.transformer(src, mask, query_embeds, pos[-1])
 
         # if not self.with_box_refine:
         #     reference_before_sigmoid = inverse_sigmoid(init_reference)
@@ -176,6 +131,8 @@ class ConditionalDETR(nn.Module):
         out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
         if self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
+        if self.with_pnp_sampler:
+            out['sample_reg_loss'] = sample_reg_loss
         return out
 
     @torch.jit.unused
@@ -444,7 +401,8 @@ def build(args):
         num_feature_levels=args.num_feature_levels,
         aux_loss=args.aux_loss,
         with_box_refine=args.with_box_refine,
-        with_anchors=args.with_anchors
+        with_anchors=args.with_anchors,
+        with_pnp_sampler=args.with_pnp_sampler,
     )
     if args.masks:
         model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))

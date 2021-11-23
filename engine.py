@@ -22,11 +22,13 @@ from datasets.voc_eval import VocEvaluator
 from datasets.panoptic_eval import PanopticEvaluator
 from datasets.data_prefetcher import data_prefetcher
 
+import random
 from loguru import logger
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, max_norm: float = 0,
+                    args=None,
                     print_freq: int = 100):
     model.train()
     criterion.train()
@@ -43,12 +45,19 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     # for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
     for _ in metric_logger.log_every(range(len(data_loader)), print_freq, header):
         try:
-            outputs = model(samples)
+            if args.with_pnp_sampler:
+                # sample_ratio = random.uniform(args.sample_ratio_lower_bound, args.sample_ratio_higher_bound)
+                sample_ratio = 0.5
+                outputs = model(samples,sample_ratio)
+            else:
+                outputs = model(samples)
         except RuntimeError as exception:
             logger.error(str(exception))
             raise exception
         
         loss_dict = criterion(outputs, targets)
+        if args.with_pnp_sampler:
+            loss_dict['sample_reg_loss']=outputs['sample_reg_loss']
         weight_dict = criterion.weight_dict
         losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
 
@@ -88,7 +97,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 
 @torch.no_grad()
-def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, output_dir):
+def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, output_dir, args):
     model.eval()
     criterion.eval()
 
@@ -111,8 +120,10 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
     for samples, targets in metric_logger.log_every(data_loader, 10, header):
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-
-        outputs = model(samples)
+        if args.with_pnp_sampler:
+            outputs = model(samples, sample_ratio=0.5)
+        else:
+            outputs = model(samples)
         loss_dict = criterion(outputs, targets)
         weight_dict = criterion.weight_dict
 

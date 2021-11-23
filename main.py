@@ -204,6 +204,10 @@ def get_args_parser():
     # using anchors for conditional_detr
     parser.add_argument('--with_anchors', action='store_true')
     parser.add_argument('--no_query_scale', action='store_true')
+    # set pnp
+    parser.add_argument('--with_pnp_sampler', action='store_true')
+    parser.add_argument('--sample_ratio_lower_bound', default=1/3., type=float)
+    parser.add_argument('--sample_ratio_higher_bound', default=0.8, type=float)
     return parser
 
 
@@ -461,7 +465,8 @@ def main(args):
         if args.distributed:
             sampler_train.set_epoch(epoch)
         train_stats = train_one_epoch(
-            model, criterion, data_loader_train, optimizer, device, epoch, args.clip_max_norm, print_freq=args.print_freq)
+            model, criterion, data_loader_train, optimizer, device, epoch, args.clip_max_norm, 
+            args, print_freq=args.print_freq)
         lr_scheduler.step(epoch)
         if args.output_dir:
             checkpoint_paths = [output_dir / 'checkpoint.pth']
@@ -479,7 +484,7 @@ def main(args):
 
         if args.dataset in ['coco', 'voc'] and epoch % args.eval_every == 0:
             test_stats, coco_evaluator = evaluate(
-                model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir
+                model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir, args
             )
         else:
             test_stats = {}
