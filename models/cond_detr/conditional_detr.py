@@ -47,8 +47,8 @@ class ConditionalDETR(nn.Module):
         self.num_queries = num_queries
         self.transformer = transformer
         hidden_dim = transformer.d_model
-        self.class_embed = nn.Linear(hidden_dim, num_classes)
-        self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
+        # self.class_embed = nn.Linear(hidden_dim, num_classes)
+        # self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
         self.with_anchors = with_anchors
         self.num_feature_levels = num_feature_levels
         if not with_anchors:
@@ -74,16 +74,16 @@ class ConditionalDETR(nn.Module):
         self.backbone = backbone
         self.aux_loss = aux_loss
 
-        # init prior_prob setting for focal loss
-        prior_prob = 0.01
-        bias_value = -math.log((1 - prior_prob) / prior_prob)
-        self.class_embed.bias.data = torch.ones(num_classes) * bias_value
+        # # init prior_prob setting for focal loss
+        # prior_prob = 0.01
+        # bias_value = -math.log((1 - prior_prob) / prior_prob)
+        # self.class_embed.bias.data = torch.ones(num_classes) * bias_value
 
-        # init bbox_mebed
-        nn.init.constant_(self.bbox_embed.layers[-1].weight.data, 0)
-        nn.init.constant_(self.bbox_embed.layers[-1].bias.data, 0)
+        # # init bbox_mebed
+        # nn.init.constant_(self.bbox_embed.layers[-1].weight.data, 0)
+        # nn.init.constant_(self.bbox_embed.layers[-1].bias.data, 0)
 
-        num_pred = transformer.decoder.num_layers
+        # num_pred = transformer.decoder.num_layers
         self.with_box_refine = with_box_refine
         # if with_box_refine:
         #     self.class_embed = _get_clones(self.class_embed, num_pred)
@@ -94,10 +94,10 @@ class ConditionalDETR(nn.Module):
         #     self.transformer.decoder.class_embed = self.class_embed
         # else:
             # nn.init.constant_(self.bbox_embed.layers[-1].bias.data[2:], -2.0) # limit, init pred w,h =0.1
-        self.class_embed = nn.ModuleList([self.class_embed for _ in range(num_pred)])
-        self.bbox_embed = nn.ModuleList([self.bbox_embed for _ in range(num_pred)])
-        self.transformer.decoder.bbox_embed = self.bbox_embed
-        self.transformer.decoder.class_embed = self.class_embed
+        # self.class_embed = nn.ModuleList([self.class_embed for _ in range(num_pred)])
+        # self.bbox_embed = nn.ModuleList([self.bbox_embed for _ in range(num_pred)])
+        # self.transformer.decoder.bbox_embed = self.bbox_embed
+        # self.transformer.decoder.class_embed = self.class_embed
 
 
     def forward(self, samples: NestedTensor):
@@ -431,7 +431,7 @@ def build(args):
         num_classes = 20
     num_classes += 1
     device = torch.device(args.device)
-
+    args.num_classes = num_classes
     backbone = build_backbone(args)
 
     transformer = build_transformer(args)

@@ -58,8 +58,10 @@ class Transformer(nn.Module):
                  # with box refine param
                  with_box_refine=False,
                  # num_feature_level
-                 num_feature_levels=1):
+                 num_feature_levels=1,
+                 num_classes=91):
         super().__init__()
+        self.num_classes = num_classes
         self.num_feature_levels = num_feature_levels
         if num_feature_levels > 1:
             self.level_embed = nn.Parameter(torch.Tensor(num_feature_levels, d_model))
@@ -85,7 +87,7 @@ class Transformer(nn.Module):
         self.decoder = TransformerDecoder(decoder_layer, num_decoder_layers, decoder_norm,
                                           return_intermediate=return_intermediate_dec,
                                           d_model=d_model, with_anchors=with_anchors, no_query_scale=no_query_scale,
-                                          with_box_refine=with_box_refine)
+                                          with_box_refine=with_box_refine, num_classes=num_classes)
 
         self._reset_parameters()
 
@@ -104,6 +106,16 @@ class Transformer(nn.Module):
         # else:
         #     nn.init.xavier_uniform_(self.decoder.ref_point_head.layers[-1].weight.data, gain=1.0)
         #     nn.init.constant_(self.decoder.ref_point_head.layers[-1].bias.data, 0.)
+
+        # init prior_prob setting for focal loss
+        prior_prob = 0.01
+        bias_value = -math.log((1 - prior_prob) / prior_prob)
+        self.decoder.class_embed.bias.data = torch.ones(self.num_classes) * bias_value
+
+        # init bbox_mebed
+        nn.init.constant_(self.decoder.bbox_embed.layers[-1].weight.data, 0)
+        nn.init.constant_(self.decoder.bbox_embed.layers[-1].bias.data, 0)
+
             
 
     def forward(self, src, mask, query_embed, pos_embed):
@@ -201,7 +213,7 @@ class TransformerDecoder(nn.Module):
 
     def __init__(self, decoder_layer, num_layers, norm=None, return_intermediate=False, d_model=256,
                  with_anchors=False, no_query_scale=False,
-                 with_box_refine=False):
+                 with_box_refine=False, num_classes=91):
         super().__init__()
         self.with_box_refine=with_box_refine
         self.with_anchors = with_anchors
@@ -211,9 +223,9 @@ class TransformerDecoder(nn.Module):
         self.return_intermediate = return_intermediate
         self.no_query_scale = no_query_scale
         if not no_query_scale:
-            # self.query_scale = MLP(d_model, d_model, d_model, 2)
+            self.query_scale = MLP(d_model, d_model, d_model, 2)
             # self.query_scale = MLP(95, d_model, d_model, 2)
-            self.query_scale = MLP(4, d_model, d_model, 2)
+            # self.query_scale = MLP(4, d_model, d_model, 2)
 
         if not with_anchors:
             self.ref_point_head = MLP(d_model, d_model, 2, 2)
@@ -229,8 +241,8 @@ class TransformerDecoder(nn.Module):
                                     nn.Linear(d_model, d_model),
                                     nn.ReLU(),
                                 )
-        self.bbox_embed = None
-        self.class_embed = None
+        self.class_embed = nn.Linear(d_model, num_classes)
+        self.bbox_embed = MLP(d_model, d_model, 4, 3)
         for layer_id in range(num_layers - 1):
             self.layers[layer_id + 1].ca_qpos_proj = None
         
@@ -277,21 +289,21 @@ class TransformerDecoder(nn.Module):
 
                 after_norm_output = self.norm(output).transpose(0,1)
                 reference_before_sigmoid = inverse_sigmoid(init_reference_points)
-                tmp = self.bbox_embed[layer_id](after_norm_output)
-                outputs_class = self.class_embed[layer_id](after_norm_output)
+                tmp = self.bbox_embed(after_norm_output)
+                outputs_class = self.class_embed(after_norm_output)
                 tmp[..., :2] += reference_before_sigmoid
                 outputs_coord = tmp.sigmoid()
                 outputs_classes.append(outputs_class)
                 outputs_coords.append(outputs_coord)
                 # import pdb;pdb.set_trace()
                 if not self.no_query_scale:
-                    # pos_transformation = self.query_scale(output)
+                    pos_transformation = self.query_scale(output)
                     # conditioned_input = torch.cat([outputs_class, tmp], dim=2).transpose(0,1)
                     # conditioned_input = conditioned_input.detach()
                     # pos_transformation = self.query_scale(conditioned_input)
 
-                    conditioned_input = tmp.transpose(0,1)
-                    pos_transformation = self.query_scale(conditioned_input)
+                    # conditioned_input = tmp.transpose(0,1)
+                    # pos_transformation = self.query_scale(conditioned_input)
                     # conditioned_input = pos2posemb4d(outputs_coord.transpose(0,1),num_pos_feats=64)
                     # pos_transformation = self.query_scale(conditioned_input)
                 else:
@@ -300,8 +312,8 @@ class TransformerDecoder(nn.Module):
 
                 after_norm_output = self.norm(output).transpose(0,1)
                 reference_before_sigmoid = inverse_sigmoid(reference_points)
-                outputs_class = self.class_embed[layer_id](after_norm_output)
-                tmp = self.bbox_embed[layer_id](after_norm_output)
+                outputs_class = self.class_embed(after_norm_output)
+                tmp = self.bbox_embed(after_norm_output)
                 if reference_before_sigmoid.shape[-1] == 4:
                     tmp += reference_before_sigmoid
                 else:
@@ -679,6 +691,7 @@ def build_transformer(args):
         no_query_scale=args.no_query_scale,
         with_box_refine=args.with_box_refine,
         num_feature_levels=args.num_feature_levels,
+        num_classes=args.num_classes,
     )
 
 
