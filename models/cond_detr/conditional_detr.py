@@ -88,7 +88,6 @@ class ConditionalDETR(nn.Module):
             assert mask is not None
             src = self.input_proj(src)
             if self.with_pnp_sampler:
-                import pdb;pdb.set_trace()
                 hs, init_reference, inter_references, outputs_coord,  outputs_class, sample_reg_loss= self.transformer(src, mask, query_embeds, pos[-1], sample_ratio)
             else:
                 hs, init_reference, inter_references, outputs_coord,  outputs_class= self.transformer(src, mask, query_embeds, pos[-1])
