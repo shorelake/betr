@@ -481,18 +481,37 @@ def main(args):
                     'epoch': epoch,
                     'args': args,
                 }, checkpoint_path)
+        if not args.with_pnp_sampler:
+            if args.dataset in ['coco', 'voc'] and epoch % args.eval_every == 0:
+                test_stats, coco_evaluator = evaluate(
+                    model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir, args
+                )
+            else:
+                test_stats = {}
 
-        if args.dataset in ['coco', 'voc'] and epoch % args.eval_every == 0:
-            test_stats, coco_evaluator = evaluate(
-                model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir, args
-            )
+            log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
+                        **{f'test_{k}': v for k, v in test_stats.items()},
+                        'epoch': epoch,
+                        'n_parameters': n_parameters}
         else:
-            test_stats = {}
+            test_stats_all_sample_ratio = []
+            sample_ratios = [0.333, 0.5, 0.65, 0.8]
+            for sample_ratio in sample_ratios:
+                if args.dataset in ['coco', 'voc'] and epoch % args.eval_every == 0:
+                    test_stats, coco_evaluator = evaluate(
+                        model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir, args, sample_ratio
+                    )
+                else:
+                    test_stats = {}
+                test_stats_all_sample_ratio.append(test_stats)
+            log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
+                        **{f'test_ratio_{sample_ratios[0]}_{k}': v for k, v in test_stats_all_sample_ratio[0].items()},
+                        **{f'test_ratio_{sample_ratios[1]}_{k}': v for k, v in test_stats_all_sample_ratio[1].items()},
+                        **{f'test_ratio_{sample_ratios[2]}_{k}': v for k, v in test_stats_all_sample_ratio[2].items()},
+                        **{f'test_ratio_{sample_ratios[3]}_{k}': v for k, v in test_stats_all_sample_ratio[3].items()},
+                        'epoch': epoch,
+                        'n_parameters': n_parameters}
 
-        log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                     **{f'test_{k}': v for k, v in test_stats.items()},
-                     'epoch': epoch,
-                     'n_parameters': n_parameters}
         logger.info(log_stats)
         if args.output_dir and utils.is_main_process():
             with (output_dir / "log.txt").open("a") as f:

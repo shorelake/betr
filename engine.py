@@ -41,13 +41,12 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
     prefetcher = data_prefetcher(data_loader, device, prefetch=True)
     samples, targets = prefetcher.next()
-
     # for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
     for _ in metric_logger.log_every(range(len(data_loader)), print_freq, header):
         try:
             if args.with_pnp_sampler:
-                # sample_ratio = random.uniform(args.sample_ratio_lower_bound, args.sample_ratio_higher_bound)
-                sample_ratio = 0.5
+                sample_ratio = random.uniform(args.sample_ratio_lower_bound, args.sample_ratio_higher_bound)
+                # sample_ratio = 0.5
                 outputs = model(samples,sample_ratio)
             else:
                 outputs = model(samples)
@@ -97,7 +96,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 
 @torch.no_grad()
-def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, output_dir, args):
+def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, output_dir, args, sample_ratio=None):
     model.eval()
     criterion.eval()
 
@@ -121,7 +120,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
         if args.with_pnp_sampler:
-            outputs = model(samples, sample_ratio=0.5)
+            outputs = model(samples, sample_ratio=sample_ratio)
         else:
             outputs = model(samples)
         loss_dict = criterion(outputs, targets)
