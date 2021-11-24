@@ -208,6 +208,8 @@ def get_args_parser():
     parser.add_argument('--with_pnp_sampler', action='store_true')
     parser.add_argument('--sample_ratio_lower_bound', default=1/3., type=float)
     parser.add_argument('--sample_ratio_higher_bound', default=0.8, type=float)
+    parser.add_argument('--sample_reg_loss', default=1e-4, type=float,
+                        help="sample_reg_loss")
     return parser
 
 
@@ -238,6 +240,8 @@ def main(args):
 
     model, criterion, postprocessors = get_model(args)
     # model, criterion, postprocessors = build_model(args)
+    if args.with_pnp_sampler:
+        criterion.weight_dict['sample_reg_loss'] = args.sample_reg_loss
     model.to(device)
     if getattr(model.backbone[0], 'backbone_names', None) is not None:
         # print('*'*30)
