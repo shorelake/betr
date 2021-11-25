@@ -29,7 +29,7 @@ from .default_transformer import build_transformer
 
 class ConditionalDETR(nn.Module):
     """ This is the Conditional DETR module that performs object detection """
-    def __init__(self, backbone, transformer, num_classes, num_queries, aux_loss=False):
+    def __init__(self, backbone, transformer, num_classes, num_queries, num_feature_levels, aux_loss=False):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -46,7 +46,25 @@ class ConditionalDETR(nn.Module):
         self.class_embed = nn.Linear(hidden_dim, num_classes)
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
         self.query_embed = nn.Embedding(num_queries, hidden_dim)
-        self.input_proj = nn.Conv2d(backbone.num_channels[0], hidden_dim, kernel_size=1)
+        self.num_feature_levels = num_feature_levels
+        if num_feature_levels > 1:
+            num_backbone_outs = len(backbone.strides)
+            input_proj_list = []
+            for _ in range(num_backbone_outs):
+                in_channels = backbone.num_channels[_]
+                input_proj_list.append(nn.Sequential(
+                    nn.Conv2d(in_channels, hidden_dim, kernel_size=1),
+                    nn.GroupNorm(32, hidden_dim),
+                ))
+            self.input_proj = nn.ModuleList(input_proj_list)
+            for proj in self.input_proj:
+                nn.init.xavier_uniform_(proj[0].weight, gain=1)
+                nn.init.constant_(proj[0].bias, 0)
+
+            self.level_embed = nn.Parameter(torch.Tensor(num_feature_levels, hidden_dim))
+            torch.nn.init.normal_(self.level_embed)
+        else:
+            self.input_proj = nn.Conv2d(backbone.num_channels[0], hidden_dim, kernel_size=1)
         self.backbone = backbone
         self.aux_loss = aux_loss
 
@@ -76,11 +94,21 @@ class ConditionalDETR(nn.Module):
         if isinstance(samples, (list, torch.Tensor)):
             samples = nested_tensor_from_tensor_list(samples)
         features, pos = self.backbone(samples)
-
-        src, mask = features[-1].decompose()
-        assert mask is not None
-        hs, reference = self.transformer(self.input_proj(src), mask, self.query_embed.weight, pos[-1])
-        
+        if self.num_feature_levels == 1:
+            src, mask = features[-1].decompose()
+            assert mask is not None
+            hs, reference = self.transformer(self.input_proj(src), mask, self.query_embed.weight, pos[-1])
+        else:
+            srcs = []
+            masks = []
+            poses = []
+            for l, (feat,lvl_pos) in enumerate(zip(features,pos)):
+                src, mask = feat.decompose()
+                srcs.append(self.input_proj[l](src))
+                masks.append(mask)
+                assert mask is not None
+                poses.append(lvl_pos)
+            hs, reference = self.transformer(srcs, masks, self.query_embed.weight, poses)
         reference_before_sigmoid = inverse_sigmoid(reference)
         outputs_coords = []
         for lvl in range(hs.shape[0]):
@@ -357,6 +385,7 @@ def build(args):
         transformer,
         num_classes=num_classes,
         num_queries=args.num_queries,
+        num_feature_levels=args.num_feature_levels,
         aux_loss=args.aux_loss,
     )
     if args.masks:

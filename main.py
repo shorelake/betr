@@ -210,6 +210,10 @@ def get_args_parser():
     parser.add_argument('--sample_ratio_higher_bound', default=0.8, type=float)
     parser.add_argument('--sample_reg_loss', default=1e-4, type=float,
                         help="sample_reg_loss")
+    parser.add_argument('--sample_topk_ratio', default=1/3., type=float)
+
+    # set cross update query & memory in w/o encoder
+    parser.add_argument('--cross_update', action='store_true')
     return parser
 
 
@@ -509,6 +513,7 @@ def main(args):
                     test_stats = {}
                 test_stats_all_sample_ratio.append(test_stats)
             log_stats = {**{f'train_{k}': v for k, v in train_stats.items()}}
+            # log_stats = {}
             for i in range(len(test_stats_all_sample_ratio)):
                 log_stats.update(**{f'test_ratio_{sample_ratios[i]}_{k}': v for k, v in test_stats_all_sample_ratio[i].items()})
             log_stats['epoch'] = epoch

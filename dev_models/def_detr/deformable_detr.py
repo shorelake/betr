@@ -471,8 +471,13 @@ def build(args):
     # backbone = build_swin_backbone(args)
     backbone = build_backbone(args)
     if args.enc_layers == 0:
-        logger.info("build tranformer neck without encoder")
-        transformer = build_deforamble_transformer_wo_encoder(args)
+        if args.cross_update:
+            logger.info("build tranformer neck without encoder, but decoder query & memory cross update")
+            from .deformable_transformer_wo_encoder_cross_update import build_deforamble_transformer_wo_encoder_cross_update
+            transformer = build_deforamble_transformer_wo_encoder_cross_update(args)
+        else:
+            logger.info("build tranformer neck without encoder")
+            transformer = build_deforamble_transformer_wo_encoder(args)
     else:
         if args.init_query_from_backbone or 'yolos' in args.vit_backbone:
             logger.error(f'not support with encoder for init_query_from_backbone {args.init_query_from_backbone} or vit backbone {args.vit_backbone}')

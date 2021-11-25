@@ -33,7 +33,7 @@ def _get_clones(module, N):
 class ConditionalDETR(nn.Module):
     """ This is the Conditional DETR module that performs object detection """
     def __init__(self, backbone, transformer, num_classes, num_queries, num_feature_levels,
-                 aux_loss=False, with_box_refine=False, with_anchors=False):
+                 aux_loss=False, with_box_refine=False, with_anchors=False, with_pnp_sampler=False):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -99,8 +99,9 @@ class ConditionalDETR(nn.Module):
         self.transformer.decoder.bbox_embed = self.bbox_embed
         self.transformer.decoder.class_embed = self.class_embed
 
+        self.with_pnp_sampler = with_pnp_sampler
 
-    def forward(self, samples: NestedTensor):
+    def forward(self, samples: NestedTensor, sample_ratio=None):
         """ The forward expects a NestedTensor, which consists of:
                - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
                - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
@@ -121,21 +122,18 @@ class ConditionalDETR(nn.Module):
         query_embeds = None
         if not self.with_anchors:
             query_embeds = self.query_embed.weight
-        if self.num_feature_levels == 1:
-            src, mask = features[-1].decompose()
+        srcs = []
+        masks = []
+        poses = []
+        for l, (feat,lvl_pos) in enumerate(zip(features,pos)):
+            src, mask = feat.decompose()
+            srcs.append(self.input_proj[l](src))
+            masks.append(mask)
             assert mask is not None
-            src = self.input_proj(src)
-            hs, init_reference, inter_references, outputs_coord,  outputs_class= self.transformer(src, mask, query_embeds, pos[-1])
+            poses.append(lvl_pos)
+        if self.with_pnp_sampler:
+            hs, init_reference, inter_references, outputs_coord,  outputs_class, sample_reg_loss = self.transformer(srcs, masks, query_embeds, poses, sample_ratio)
         else:
-            srcs = []
-            masks = []
-            poses = []
-            for l, (feat,lvl_pos) in enumerate(zip(features,pos)):
-                src, mask = feat.decompose()
-                srcs.append(self.input_proj[l](src))
-                masks.append(mask)
-                assert mask is not None
-                poses.append(lvl_pos)
             hs, init_reference, inter_references, outputs_coord,  outputs_class= self.transformer(srcs, masks, query_embeds, poses)
 
         # if not self.with_box_refine:
@@ -176,6 +174,8 @@ class ConditionalDETR(nn.Module):
         out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
         if self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
+        if self.with_pnp_sampler:
+            out['sample_reg_loss'] = sample_reg_loss
         return out
 
     @torch.jit.unused
@@ -444,7 +444,8 @@ def build(args):
         num_feature_levels=args.num_feature_levels,
         aux_loss=args.aux_loss,
         with_box_refine=args.with_box_refine,
-        with_anchors=args.with_anchors
+        with_anchors=args.with_anchors,
+        with_pnp_sampler=args.with_pnp_sampler,
     )
     if args.masks:
         model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))

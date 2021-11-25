@@ -62,7 +62,7 @@ class Transformer(nn.Module):
                  num_classes=91,
                  # pnp sampler param
                  with_pnp_sampler=False,
-                 sample_topk_ratio=1/3., score_pred_net='2layer-fc-256', 
+                 sample_topk_ratio=1/2., score_pred_net='2layer-fc-256', 
                  kproj_net='2layer-fc', unsample_abstract_number=30, 
                  pos_embed_kproj=False):
         super().__init__()
@@ -801,6 +801,7 @@ def build_transformer(args):
         num_feature_levels=args.num_feature_levels,
         num_classes=args.num_classes,
         with_pnp_sampler=args.with_pnp_sampler,
+        sample_topk_ratio=args.sample_topk_ratio,
     )
 
 

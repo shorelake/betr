@@ -6,7 +6,8 @@
 # Modified from DETR (https://github.com/facebookresearch/detr)
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 # ------------------------------------------------------------------------
-
+# import models.cond_detr as cond_detr
+from models import cond_detr
 from loguru import logger
 
 def build_model(args):
@@ -18,7 +19,7 @@ def build_model(args):
         from models.anchor_detr import build_anchordetr
         logger.info("build anchor detr")
         return build_anchordetr(args)
-    elif args.detector == 'conditional_detr':
+    elif args.detector in cond_detr.__all__:
         from models.cond_detr import build_conditionaldetr
         logger.info("build conditional detr")
         return build_conditionaldetr(args)

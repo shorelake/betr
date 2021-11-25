@@ -50,9 +50,13 @@ class Transformer(nn.Module):
     def __init__(self, d_model=512, nhead=8, num_queries=300, num_encoder_layers=6,
                  num_decoder_layers=6, dim_feedforward=2048, dropout=0.1,
                  activation="relu", normalize_before=False,
-                 return_intermediate_dec=False):
+                 return_intermediate_dec=False,
+                 num_feature_levels=1):
         super().__init__()
-
+        self.num_feature_levels = num_feature_levels
+        if num_feature_levels > 1:
+            self.level_embed = nn.Parameter(torch.Tensor(num_feature_levels, d_model))
+            torch.nn.init.normal_(self.level_embed)
         encoder_layer = TransformerEncoderLayer(d_model, nhead, dim_feedforward,
                                                 dropout, activation, normalize_before)
         encoder_norm = nn.LayerNorm(d_model) if normalize_before else None
@@ -78,12 +82,31 @@ class Transformer(nn.Module):
 
     def forward(self, src, mask, query_embed, pos_embed):
         # flatten NxCxHxW to HWxNxC
-        bs, c, h, w = src.shape
-        src = src.flatten(2).permute(2, 0, 1)
-        pos_embed = pos_embed.flatten(2).permute(2, 0, 1)
-        query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)
-        mask = mask.flatten(1)
-
+        if self.num_feature_levels == 1:
+            bs, c, h, w = src.shape
+            src = src.flatten(2).permute(2, 0, 1)
+            pos_embed = pos_embed.flatten(2).permute(2, 0, 1)
+            query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)
+            mask = mask.flatten(1)
+        else:
+            src_flatten = []
+            mask_flatten = []
+            lvl_pos_embed_flatten = []
+            lvl_scale_embed_flatten = []
+            for lvl, (lvl_src, lvl_mask, lvl_pos_embed) in enumerate(zip(src, mask, pos_embed)):
+                bs, c, h, w = lvl_src.shape
+                
+                lvl_src = lvl_src.flatten(2).permute(2, 0, 1)
+                lvl_mask = lvl_mask.flatten(1)
+                lvl_pos_embed = lvl_pos_embed.flatten(2).permute(2, 0, 1)
+                lvl_pos_embed = lvl_pos_embed + self.level_embed[lvl].view(1, 1, -1)
+                lvl_pos_embed_flatten.append(lvl_pos_embed)
+                src_flatten.append(lvl_src)
+                mask_flatten.append(lvl_mask)
+            src = torch.cat(src_flatten, 0)
+            mask = torch.cat(mask_flatten, 1)
+            pos_embed = torch.cat(lvl_pos_embed_flatten, 0)
+            query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)
         tgt = torch.zeros_like(query_embed)
         memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)
         hs, references = self.decoder(tgt, memory, memory_key_padding_mask=mask,
@@ -104,7 +127,6 @@ class TransformerEncoder(nn.Module):
                 src_key_padding_mask: Optional[Tensor] = None,
                 pos: Optional[Tensor] = None):
         output = src
-
         for layer in self.layers:
             output = layer(output, src_mask=mask,
                            src_key_padding_mask=src_key_padding_mask, pos=pos)
@@ -407,6 +429,7 @@ def build_transformer(args):
         num_decoder_layers=args.dec_layers,
         normalize_before=args.pre_norm,
         return_intermediate_dec=True,
+        num_feature_levels=args.num_feature_levels,
     )
 
 
