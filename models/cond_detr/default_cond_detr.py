@@ -29,7 +29,7 @@ from .default_transformer import build_transformer
 
 class ConditionalDETR(nn.Module):
     """ This is the Conditional DETR module that performs object detection """
-    def __init__(self, backbone, transformer, num_classes, num_queries, num_feature_levels, aux_loss=False):
+    def __init__(self, backbone, transformer, num_classes, num_queries, num_feature_levels, aux_loss=False, with_pnp_sampler=False):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -77,7 +77,9 @@ class ConditionalDETR(nn.Module):
         nn.init.constant_(self.bbox_embed.layers[-1].weight.data, 0)
         nn.init.constant_(self.bbox_embed.layers[-1].bias.data, 0)
 
-    def forward(self, samples: NestedTensor):
+        self.with_pnp_sampler = with_pnp_sampler
+
+    def forward(self, samples: NestedTensor, sample_ratio=None):
         """ The forward expects a NestedTensor, which consists of:
                - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
                - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
@@ -108,7 +110,11 @@ class ConditionalDETR(nn.Module):
                 masks.append(mask)
                 assert mask is not None
                 poses.append(lvl_pos)
-            hs, reference = self.transformer(srcs, masks, self.query_embed.weight, poses)
+            # hs, reference = self.transformer(srcs, masks, self.query_embed.weight, poses)
+            if self.with_pnp_sampler:
+                hs, reference, sample_reg_loss = self.transformer(srcs, masks, self.query_embed.weight, poses, sample_ratio)
+            else:
+                hs, reference = self.transformer(srcs, masks, self.query_embed.weight, poses)
         reference_before_sigmoid = inverse_sigmoid(reference)
         outputs_coords = []
         for lvl in range(hs.shape[0]):
@@ -122,6 +128,8 @@ class ConditionalDETR(nn.Module):
         out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
         if self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
+        if self.with_pnp_sampler:
+            out['sample_reg_loss'] = sample_reg_loss
         return out
 
     @torch.jit.unused
@@ -387,6 +395,7 @@ def build(args):
         num_queries=args.num_queries,
         num_feature_levels=args.num_feature_levels,
         aux_loss=args.aux_loss,
+        with_pnp_sampler=args.with_pnp_sampler,
     )
     if args.masks:
         model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))
