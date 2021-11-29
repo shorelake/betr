@@ -1,5 +1,5 @@
 from loguru import logger
-__all__ = ['conditional_detr', 'default_conditional_detr']
+__all__ = ['conditional_detr', 'default_conditional_detr', 'default_conditional_detr_v2']
 
 def build_conditionaldetr(args):
     if args.detector == 'conditional_detr':
@@ -19,4 +19,8 @@ def build_conditionaldetr(args):
     elif args.detector == 'default_conditional_detr':
         from .default_cond_detr import build
         logger.info(f'build {args.num_feature_levels} scale default conditional detr')
+        return build(args)
+    elif args.detector == 'default_conditional_detr_v2':
+        from .default_cond_detr_v2 import build
+        logger.info(f'build {args.num_feature_levels} scale default conditional detr v2')
         return build(args)

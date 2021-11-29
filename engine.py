@@ -45,8 +45,9 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     for _ in metric_logger.log_every(range(len(data_loader)), print_freq, header):
         try:
             if args.with_pnp_sampler:
-                sample_ratio = random.uniform(args.sample_ratio_lower_bound, args.sample_ratio_higher_bound)
-                # sample_ratio = 0.5
+                # sample_ratio = random.uniform(args.sample_ratio_lower_bound, args.sample_ratio_higher_bound)
+                # sample_ratio = 0.17
+                sample_ratio = args.sample_topk_ratio
                 outputs = model(samples,sample_ratio)
             else:
                 outputs = model(samples)

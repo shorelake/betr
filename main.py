@@ -244,8 +244,8 @@ def main(args):
 
     model, criterion, postprocessors = get_model(args)
     # model, criterion, postprocessors = build_model(args)
-    if args.with_pnp_sampler:
-        criterion.weight_dict['sample_reg_loss'] = args.sample_reg_loss
+    # if args.with_pnp_sampler:
+    #     criterion.weight_dict['sample_reg_loss'] = args.sample_reg_loss
     model.to(device)
     if getattr(model.backbone[0], 'backbone_names', None) is not None:
         # print('*'*30)
@@ -503,7 +503,8 @@ def main(args):
                         'n_parameters': n_parameters}
         else:
             test_stats_all_sample_ratio = []
-            sample_ratios = [0.333, 0.5, 0.65, 0.8]
+            # sample_ratios = [0.333, 0.5, 0.65, 0.8]
+            sample_ratios = [args.sample_topk_ratio]
             for sample_ratio in sample_ratios:
                 if args.dataset in ['coco', 'voc'] and epoch % args.eval_every == 0:
                     test_stats, coco_evaluator = evaluate(
