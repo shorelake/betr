@@ -211,7 +211,7 @@ def get_args_parser():
     parser.add_argument('--sample_reg_loss', default=1e-4, type=float,
                         help="sample_reg_loss")
     parser.add_argument('--sample_topk_ratio', default=1/3., type=float)
-
+    parser.add_argument('--with_gt_mask', action='store_true')
     # set cross update query & memory in w/o encoder
     parser.add_argument('--cross_update', action='store_true')
     return parser

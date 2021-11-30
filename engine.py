@@ -21,9 +21,29 @@ from datasets.coco_eval import CocoEvaluator
 from datasets.voc_eval import VocEvaluator
 from datasets.panoptic_eval import PanopticEvaluator
 from datasets.data_prefetcher import data_prefetcher
-
+from util.box_ops import box_cxcywh_to_xyxy
 import random
 from loguru import logger
+
+def get_gt_mask(target, mask_size, device):
+    h,w = target['size']
+    gt_mask = torch.zeros([h,w],dtype=torch.bool, device=device)
+    tgt_boxes = target['boxes']
+    tgt_boxes = box_cxcywh_to_xyxy(tgt_boxes)
+    tgt_boxes = tgt_boxes * torch.tensor([w,h,w,h], device=device)
+    for i in range(tgt_boxes.shape[0]):
+        tgt_box = tgt_boxes[i]
+        x_start_index = int(tgt_box[0])
+        x_end_index = int(tgt_box[2])
+        y_start_index = int(tgt_box[1])
+        y_end_index = int(tgt_box[3])
+        gt_mask[y_start_index:y_end_index,x_start_index:x_end_index] = True # True for gt bbox mask, False for the others
+        # for y_index in range(y_start_index,y_end_index):
+        #     for x_index in range(x_start_index, x_end_index):
+        #         gt_mask[y_index,x_index] = True 
+    batched_gt_mask = torch.zeros(mask_size, dtype=torch.bool, device=device) # Padding Part set False
+    batched_gt_mask[:h,:w].copy_(gt_mask)
+    return batched_gt_mask
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
@@ -43,12 +63,22 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     samples, targets = prefetcher.next()
     # for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
     for _ in metric_logger.log_every(range(len(data_loader)), print_freq, header):
+        gt_masks = None
+        if args.with_gt_mask:
+            gt_masks = []
+            _, h, w = samples.mask.shape
+            mask_size = (h,w)
+            for i, target in enumerate(targets):
+                gt_mask = get_gt_mask(target, mask_size, device)
+                gt_masks.append(gt_mask)
+            gt_masks = torch.stack(gt_masks)
+
         try:
             if args.with_pnp_sampler:
                 # sample_ratio = random.uniform(args.sample_ratio_lower_bound, args.sample_ratio_higher_bound)
                 # sample_ratio = 0.17
                 sample_ratio = args.sample_topk_ratio
-                outputs = model(samples,sample_ratio)
+                outputs = model(samples,sample_ratio, gt_masks)
             else:
                 outputs = model(samples)
         except RuntimeError as exception:
