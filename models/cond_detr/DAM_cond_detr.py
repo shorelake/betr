@@ -24,7 +24,7 @@ from models.backbone import build_backbone
 from models.matcher import build_matcher
 from models.segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
-from .default_transformer_v2 import build_transformer
+from .DAM_transformer import build_transformer
 
 
 class ConditionalDETR(nn.Module):
@@ -79,7 +79,7 @@ class ConditionalDETR(nn.Module):
 
         self.with_pnp_sampler = with_pnp_sampler
 
-    def forward(self, samples: NestedTensor, sample_ratio=None, gt_masks=None, dam_masks=None):
+    def forward(self, samples: NestedTensor, sample_ratio=None):
         """ The forward expects a NestedTensor, which consists of:
                - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
                - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
@@ -99,12 +99,7 @@ class ConditionalDETR(nn.Module):
         if self.num_feature_levels == 1:
             src, mask = features[-1].decompose()
             assert mask is not None
-            if self.with_pnp_sampler:
-                if gt_masks is not None:
-                    gt_masks = F.interpolate(gt_masks[None].float(), size=mask.shape[-2:]).to(torch.bool)[0]
-                hs, reference, sample_reg_loss = self.transformer(self.input_proj(src), mask, self.query_embed.weight, pos[-1], sample_ratio, gt_masks, dam_masks)
-            else:
-                hs, reference = self.transformer(self.input_proj(src), mask, self.query_embed.weight, pos[-1])
+            hs, reference, dam_masks = self.transformer(self.input_proj(src), mask, self.query_embed.weight, pos[-1])
         else:
             srcs = []
             masks = []
@@ -120,22 +115,22 @@ class ConditionalDETR(nn.Module):
                 hs, reference, sample_reg_loss = self.transformer(srcs, masks, self.query_embed.weight, poses, sample_ratio)
             else:
                 hs, reference = self.transformer(srcs, masks, self.query_embed.weight, poses)
-        reference_before_sigmoid = inverse_sigmoid(reference)
-        outputs_coords = []
-        for lvl in range(hs.shape[0]):
-            tmp = self.bbox_embed(hs[lvl])
-            tmp[..., :2] += reference_before_sigmoid
-            outputs_coord = tmp.sigmoid()
-            outputs_coords.append(outputs_coord)
-        outputs_coord = torch.stack(outputs_coords)
+        # reference_before_sigmoid = inverse_sigmoid(reference)
+        # outputs_coords = []
+        # for lvl in range(hs.shape[0]):
+        #     tmp = self.bbox_embed(hs[lvl])
+        #     tmp[..., :2] += reference_before_sigmoid
+        #     outputs_coord = tmp.sigmoid()
+        #     outputs_coords.append(outputs_coord)
+        # outputs_coord = torch.stack(outputs_coords)
 
-        outputs_class = self.class_embed(hs)
-        out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
-        if self.aux_loss:
-            out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
-        if self.with_pnp_sampler:
-            out['sample_reg_loss'] = sample_reg_loss
-        return out
+        # outputs_class = self.class_embed(hs)
+        # out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
+        # if self.aux_loss:
+        #     out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
+        # if self.with_pnp_sampler:
+        #     out['sample_reg_loss'] = sample_reg_loss
+        return dam_masks
 
     @torch.jit.unused
     def _set_aux_loss(self, outputs_class, outputs_coord):
@@ -400,7 +395,7 @@ def build(args):
         num_queries=args.num_queries,
         num_feature_levels=args.num_feature_levels,
         aux_loss=args.aux_loss,
-        with_pnp_sampler=args.with_pnp_sampler,
+        # with_pnp_sampler=args.with_pnp_sampler,
     )
     if args.masks:
         model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))

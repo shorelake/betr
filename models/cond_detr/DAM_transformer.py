@@ -14,8 +14,8 @@ from typing import Optional, List
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
-from .attention import MultiheadAttention
-import random
+from .DAM_attention import MultiheadAttention
+
 class MLP(nn.Module):
     """ Very simple multi-layer perceptron (also called FFN)"""
 
@@ -56,9 +56,7 @@ class Transformer(nn.Module):
                  with_pnp_sampler=False,
                  sample_topk_ratio=1/2., score_pred_net='2layer-fc-256', 
                  kproj_net='2layer-fc', unsample_abstract_number=30, 
-                 pos_embed_kproj=False,
-                 # random sampler
-                 with_random_sampler=False):
+                 pos_embed_kproj=False):
         super().__init__()
         self.num_feature_levels = num_feature_levels
         if num_feature_levels > 1:
@@ -83,20 +81,14 @@ class Transformer(nn.Module):
         self.dec_layers = num_decoder_layers
 
         self.with_pnp_sampler = with_pnp_sampler
-        self.with_random_sampler = with_random_sampler
         if with_pnp_sampler:
-            # self.sampler = SortSamplerWithoutPool(sample_topk_ratio, d_model, score_pred_net=score_pred_net)
-            # self.sampler = RandomSampler(sample_topk_ratio, d_model)
-            # self.sampler = GtSampler(sample_topk_ratio, d_model)
-            self.sampler = DAMSampler(sample_topk_ratio, d_model)
-
-
+            self.sampler = SortSampler(sample_topk_ratio, d_model, score_pred_net=score_pred_net, kproj_net=kproj_net, unsample_abstract_number=unsample_abstract_number, pos_embed_kproj=pos_embed_kproj)
     def _reset_parameters(self):
         for p in self.parameters():
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, src, mask, query_embed, pos_embed, sample_ratio=None, gt_masks=None, dam_masks=None):
+    def forward(self, src, mask, query_embed, pos_embed, sample_ratio=None):
         # flatten NxCxHxW to HWxNxC
         if self.num_feature_levels == 1:
             bs, c, h, w = src.shape
@@ -104,8 +96,6 @@ class Transformer(nn.Module):
             pos_embed = pos_embed.flatten(2).permute(2, 0, 1)
             query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)
             mask = mask.flatten(1)
-            if gt_masks is not None:
-                gt_masks = gt_masks.flatten(1)
         else:
             src_flatten = []
             mask_flatten = []
@@ -126,225 +116,16 @@ class Transformer(nn.Module):
             pos_embed = torch.cat(lvl_pos_embed_flatten, 0)
             query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)
         if self.with_pnp_sampler:
-            src, sample_reg_loss, sort_confidence_topk, mask, pos_embed = self.sampler(src, mask, pos_embed, sample_ratio, gt_masks, dam_masks)
+            src, sample_reg_loss, sort_confidence_topk, mask, pos_embed = self.sampler(src, mask, pos_embed, sample_ratio)
         tgt = torch.zeros_like(query_embed)
         memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)
-        hs, references = self.decoder(tgt, memory, memory_key_padding_mask=mask,
+        hs, references, dam_masks = self.decoder(tgt, memory, memory_key_padding_mask=mask,
                           pos=pos_embed, query_pos=query_embed)
+        
         if self.with_pnp_sampler:
             return hs, references, sample_reg_loss
         else:
-            return hs, references
-class DAMSampler(nn.Module):
-    def __init__(self, topk_ratio, input_dim):
-        super().__init__()
-        self.topk_ratio = topk_ratio
-        self.norm_feature = nn.LayerNorm(input_dim,elementwise_affine=False)
-
-    def forward(self, src, mask, pos_embed, sample_ratio, gt_masks, dam_masks):
-        l, bs, c = src.shape
-        sample_weight = dam_masks
-        sample_weight_clone = sample_weight.clone().detach()
-        sample_weight_clone[mask] = -1.
-
-        if sample_ratio==None:
-            sample_ratio = self.topk_ratio
-        ##max sample number:
-        sample_lens = ((~mask).sum(1)*sample_ratio).int()
-        max_sample_num = sample_lens.max()
-        mask_topk = torch.arange(max_sample_num).expand(len(sample_lens), max_sample_num).to(sample_lens.device) > (sample_lens-1).unsqueeze(1)
-
-        ## for sampling remaining unsampled points
-        min_sample_num = sample_lens.min()
-
-        sort_order = sample_weight_clone.sort(descending=True,dim=1)[1]
-        sort_confidence_topk = sort_order[:,:max_sample_num]
-        ## flatten for gathering
-        # src = src.flatten(2).permute(2, 0, 1)
-        src = self.norm_feature(src)
-
-        ## reg sample weight to be sparse with l1 loss
-        sample_reg_loss = sample_weight.gather(1,sort_confidence_topk).mean()
-        src_sampled = src.gather(0,sort_confidence_topk.permute(1,0)[...,None].expand(-1,-1,c)) *sample_weight.gather(1,sort_confidence_topk).permute(1,0).unsqueeze(-1)
-        pos_embed_sampled = pos_embed.gather(0,sort_confidence_topk.permute(1,0)[...,None].expand(-1,-1,c))
-        mask_sampled = mask_topk
-
-        src = src_sampled
-        pos_embed = pos_embed_sampled
-        mask = mask_sampled
-        assert ((~mask).sum(1)==sample_lens).all()
-        return src, sample_reg_loss, sort_confidence_topk, mask, pos_embed
-
-class GtSampler(nn.Module):
-    def __init__(self, topk_ratio, input_dim):
-        super().__init__()
-        self.topk_ratio = topk_ratio
-        self.norm_feature = nn.LayerNorm(input_dim,elementwise_affine=False)
-
-    def forward(self, src, mask, pos_embed, sample_ratio, gt_masks, dam_masks):
-        l, bs, c = src.shape
-        # sample_weight = torch.ones([l,bs], dtype=src.dtype, device=src.device)
-        # sample_weight_clone = sample_weight.clone().detach()
-        # sample_weight_clone[mask.permute(1,0)] = 0.
-        sample_weight = gt_masks.float().permute(1,0)
-        sample_weight_clone = sample_weight.clone().detach()
-        if sample_ratio==None:
-            sample_ratio = self.topk_ratio
-        sample_lens = ((~mask).sum(1)*sample_ratio).int()
-        gt_lens = (gt_masks.sum(1)).int()
-        max_sample_num = sample_lens.max()
-        # mask_topk = torch.arange(max_sample_num).expand(len(sample_lens), max_sample_num).to(sample_lens.device) > (sample_lens-1).unsqueeze(1)
-        mask_topk = torch.arange(max_sample_num).expand(len(sample_lens), max_sample_num).to(sample_lens.device) > (gt_lens-1).unsqueeze(1)
-        sort_confidence_topk = []
-        for i in range(bs):
-            i_sample_weight_clone = sample_weight_clone[:,i]
-            i_sample_nonzero = torch.nonzero(i_sample_weight_clone)
-            i_sample_zero = torch.nonzero((i_sample_weight_clone == 0.))
-            i_sample_nonzero_random_idx = torch.randperm(i_sample_nonzero.size(0))
-            i_sample_nonzero = i_sample_nonzero[i_sample_nonzero_random_idx]
-            i_sample_zero_random_idx = torch.randperm(i_sample_zero.size(0))
-            i_sample_zero = i_sample_zero[i_sample_zero_random_idx]
-            if max_sample_num > i_sample_nonzero.size(0):
-                sample_zero_num = max_sample_num - i_sample_nonzero.size(0)
-                i_sample_topk = torch.cat((i_sample_nonzero, i_sample_zero[:sample_zero_num]),0)
-                sort_confidence_topk.append(i_sample_topk.squeeze(1))
-            else:
-                sort_confidence_topk.append(i_sample_nonzero[:max_sample_num].squeeze(1))
-        sort_confidence_topk = torch.stack(sort_confidence_topk, dim=1)
-
-
-
-        # random_idx = torch.randperm(sample_weight_clone.shape[0])
-        # sample_weight_clone_random = sample_weight_clone[random_idx,:]
-        # sort_order = sample_weight_clone_random.sort(descending=True,dim=0)[1]
-        # sort_confidence_topk = sort_order[:max_sample_num,:]
-
-        src = self.norm_feature(src)
-
-        ## reg sample weight to be sparse with l1 loss
-        sample_reg_loss = sample_weight.gather(0,sort_confidence_topk).mean()
-        src_sampled = src.gather(0,sort_confidence_topk[...,None].expand(-1,-1,c)) *sample_weight.gather(0,sort_confidence_topk).unsqueeze(-1)
-        pos_embed_sampled = pos_embed.gather(0,sort_confidence_topk[...,None].expand(-1,-1,c))
-        mask_sampled = mask_topk
-
-
-        src = src_sampled
-        pos_embed = pos_embed_sampled
-        mask = mask_sampled
-        comp_lens = torch.tensor([min(gt_lens[0],max_sample_num), min(gt_lens[1],max_sample_num)],dtype=torch.int32,device=mask.device)
-        assert ((~mask).sum(1)==comp_lens).all()
-        return src, sample_reg_loss, None, mask, pos_embed
-
-class RandomSampler(nn.Module):
-    def __init__(self, topk_ratio, input_dim):
-        super().__init__()
-        self.topk_ratio = topk_ratio
-        self.norm_feature = nn.LayerNorm(input_dim,elementwise_affine=False)
-
-    def forward(self, src, mask, pos_embed, sample_ratio, gt_masks, dam_masks):
-        l, bs, c = src.shape
-        sample_weight = torch.ones([l,bs], dtype=src.dtype, device=src.device)
-        sample_weight_clone = sample_weight.clone().detach()
-        sample_weight_clone[mask.permute(1,0)] = 0.
-        if sample_ratio==None:
-            sample_ratio = self.topk_ratio
-        sample_lens = ((~mask).sum(1)*sample_ratio).int()
-        max_sample_num = sample_lens.max()
-        mask_topk = torch.arange(max_sample_num).expand(len(sample_lens), max_sample_num).to(sample_lens.device) > (sample_lens-1).unsqueeze(1)
-        sort_confidence_topk = []
-        for i in range(bs):
-            i_sample_weight_clone = sample_weight_clone[:,i]
-            i_sample_nonzero = torch.nonzero(i_sample_weight_clone)
-            i_sample_zero = torch.nonzero((i_sample_weight_clone == 0.))
-            i_sample_nonzero_random_idx = torch.randperm(i_sample_nonzero.size(0))
-            i_sample_nonzero = i_sample_nonzero[i_sample_nonzero_random_idx]
-            if max_sample_num > i_sample_nonzero.size(0):
-                sample_zero_num = max_sample_num - i_sample_nonzero.size(0)
-                i_sample_topk = torch.cat((i_sample_nonzero, i_sample_zero[:sample_zero_num]),0)
-                sort_confidence_topk.append(i_sample_topk.squeeze(1))
-            else:
-                sort_confidence_topk.append(i_sample_nonzero[:max_sample_num].squeeze(1))
-        sort_confidence_topk = torch.stack(sort_confidence_topk, dim=1)
-
-
-
-        # random_idx = torch.randperm(sample_weight_clone.shape[0])
-        # sample_weight_clone_random = sample_weight_clone[random_idx,:]
-        # sort_order = sample_weight_clone_random.sort(descending=True,dim=0)[1]
-        # sort_confidence_topk = sort_order[:max_sample_num,:]
-
-        src = self.norm_feature(src)
-
-        ## reg sample weight to be sparse with l1 loss
-        sample_reg_loss = sample_weight.gather(0,sort_confidence_topk).mean()
-        src_sampled = src.gather(0,sort_confidence_topk[...,None].expand(-1,-1,c)) *sample_weight.gather(0,sort_confidence_topk).unsqueeze(-1)
-        pos_embed_sampled = pos_embed.gather(0,sort_confidence_topk[...,None].expand(-1,-1,c))
-        mask_sampled = mask_topk
-
-
-        src = src_sampled
-        pos_embed = pos_embed_sampled
-        mask = mask_sampled
-        assert ((~mask).sum(1)==sample_lens).all()
-        return src, sample_reg_loss, None, mask, pos_embed
-
-class SortSamplerWithoutPool(nn.Module):
-
-    def __init__(self, topk_ratio, input_dim, score_pred_net='2layer-fc',pos_embed_kproj=False):
-        super().__init__()
-        self.topk_ratio = topk_ratio
-        if score_pred_net == '2layer-fc-256':
-            self.score_pred_net = nn.Sequential(nn.Linear(input_dim, input_dim),
-                                                 nn.ReLU(),
-                                                 nn.Linear(input_dim, 1, 1))
-        elif score_pred_net == '2layer-fc-16':
-            self.score_pred_net = nn.Sequential(nn.Linear(input_dim, 16, 1),
-                                                 nn.ReLU(),
-                                                 nn.Linear(16, 1, 1))
-        elif score_pred_net == '1layer-fc':
-            self.score_pred_net = nn.Linear(input_dim, 1, 1)
-        else:
-            raise ValueError
-
-        self.norm_feature = nn.LayerNorm(input_dim,elementwise_affine=False)
-
-    def forward(self, src, mask, pos_embed, sample_ratio, gt_masks, dam_masks):
-        # bs,c ,h, w  = src.shape
-        _, bs, c = src.shape
-        sample_weight = self.score_pred_net(src.transpose(0,1)).sigmoid().view(bs,-1)
-        # sample_weight[mask] = sample_weight[mask].clone() * 0.
-        # sample_weight.data[mask] = 0.
-        sample_weight_clone = sample_weight.clone().detach()
-        sample_weight_clone[mask] = -1.
-
-        if sample_ratio==None:
-            sample_ratio = self.topk_ratio
-        ##max sample number:
-        sample_lens = ((~mask).sum(1)*sample_ratio).int()
-        max_sample_num = sample_lens.max()
-        mask_topk = torch.arange(max_sample_num).expand(len(sample_lens), max_sample_num).to(sample_lens.device) > (sample_lens-1).unsqueeze(1)
-
-        ## for sampling remaining unsampled points
-        min_sample_num = sample_lens.min()
-
-        sort_order = sample_weight_clone.sort(descending=True,dim=1)[1]
-        sort_confidence_topk = sort_order[:,:max_sample_num]
-        ## flatten for gathering
-        # src = src.flatten(2).permute(2, 0, 1)
-        src = self.norm_feature(src)
-
-        ## reg sample weight to be sparse with l1 loss
-        sample_reg_loss = sample_weight.gather(1,sort_confidence_topk).mean()
-        src_sampled = src.gather(0,sort_confidence_topk.permute(1,0)[...,None].expand(-1,-1,c)) *sample_weight.gather(1,sort_confidence_topk).permute(1,0).unsqueeze(-1)
-        pos_embed_sampled = pos_embed.gather(0,sort_confidence_topk.permute(1,0)[...,None].expand(-1,-1,c))
-        mask_sampled = mask_topk
-
-        src = src_sampled
-        pos_embed = pos_embed_sampled
-        mask = mask_sampled
-        assert ((~mask).sum(1)==sample_lens).all()
-        return src, sample_reg_loss, sort_confidence_topk, mask, pos_embed
-
+            return hs, references, dam_masks
 
 class SortSampler(nn.Module):
 
@@ -486,6 +267,7 @@ class TransformerDecoder(nn.Module):
         reference_points_before_sigmoid = self.ref_point_head(query_pos)    # [num_queries, batch_size, 2]
         reference_points = reference_points_before_sigmoid.sigmoid().transpose(0, 1)
 
+        dam_masks = []
         for layer_id, layer in enumerate(self.layers):
             obj_center = reference_points[..., :2].transpose(0, 1)      # [num_queries, batch_size, 2]
 
@@ -499,12 +281,14 @@ class TransformerDecoder(nn.Module):
             query_sine_embed = gen_sineembed_for_position(obj_center)     
             # apply transformation
             query_sine_embed = query_sine_embed * pos_transformation
-            output = layer(output, memory, tgt_mask=tgt_mask,
+            output, dam_attn = layer(output, memory, tgt_mask=tgt_mask,
                            memory_mask=memory_mask,
                            tgt_key_padding_mask=tgt_key_padding_mask,
                            memory_key_padding_mask=memory_key_padding_mask,
                            pos=pos, query_pos=query_pos, query_sine_embed=query_sine_embed,
                            is_first=(layer_id == 0))
+            dam_attn = dam_attn.sum(dim=1).sum(dim=1)
+            dam_masks.append(dam_attn)
             if self.return_intermediate:
                 intermediate.append(self.norm(output))
 
@@ -513,11 +297,13 @@ class TransformerDecoder(nn.Module):
             if self.return_intermediate:
                 intermediate.pop()
                 intermediate.append(output)
-
+        dam_masks = torch.stack(dam_masks,dim=1)
+        dam_masks = dam_masks.sum(dim=1)
         if self.return_intermediate:
-            return [torch.stack(intermediate).transpose(1, 2), reference_points]
 
-        return output.unsqueeze(0)
+            return [torch.stack(intermediate).transpose(1, 2), reference_points, dam_masks]
+
+        return output.unsqueeze(0), dam_masks
 
 
 class TransformerEncoderLayer(nn.Module):
@@ -684,10 +470,10 @@ class TransformerDecoderLayer(nn.Module):
         k_pos = k_pos.view(hw, bs, self.nhead, n_model//self.nhead)
         k = torch.cat([k, k_pos], dim=3).view(hw, bs, n_model * 2)
 
-        tgt2 = self.cross_attn(query=q,
+        tgt2, dam_attn = self.cross_attn(query=q,
                                    key=k,
                                    value=v, attn_mask=memory_mask,
-                                   key_padding_mask=memory_key_padding_mask)[0]               
+                                   key_padding_mask=memory_key_padding_mask)               
         # ========== End of Cross-Attention =============
 
         tgt = tgt + self.dropout2(tgt2)
@@ -695,7 +481,7 @@ class TransformerDecoderLayer(nn.Module):
         tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt))))
         tgt = tgt + self.dropout3(tgt2)
         tgt = self.norm3(tgt)
-        return tgt
+        return tgt, dam_attn
 
     def forward_pre(self, tgt, memory,
                     tgt_mask: Optional[Tensor] = None,
@@ -753,8 +539,8 @@ def build_transformer(args):
         normalize_before=args.pre_norm,
         return_intermediate_dec=True,
         num_feature_levels=args.num_feature_levels,
-        with_pnp_sampler=args.with_pnp_sampler,
-        sample_topk_ratio=args.sample_topk_ratio,
+        # with_pnp_sampler=args.with_pnp_sampler,
+        # sample_topk_ratio=args.sample_topk_ratio,
     )
 
 

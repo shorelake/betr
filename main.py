@@ -212,6 +212,7 @@ def get_args_parser():
                         help="sample_reg_loss")
     parser.add_argument('--sample_topk_ratio', default=1/3., type=float)
     parser.add_argument('--with_gt_mask', action='store_true')
+    parser.add_argument('--with_dam_mask', action='store_true')
     # set cross update query & memory in w/o encoder
     parser.add_argument('--cross_update', action='store_true')
     return parser
@@ -243,6 +244,16 @@ def main(args):
     random.seed(seed)
 
     model, criterion, postprocessors = get_model(args)
+    if args.with_dam_mask:
+        from models.cond_detr.DAM_cond_detr import build
+        teacher_model,_,_ = build(args)
+        checkpoint = torch.load('./pretrained_model/r50_default_cond_detr.pth') # 41.1 mAP
+        teacher_model.load_state_dict(checkpoint['model'])
+        teacher_model.eval()
+        for param in teacher_model.parameters():
+            param.requires_grad = False
+        teacher_model.to(device)
+        
     # model, criterion, postprocessors = build_model(args)
     # if args.with_pnp_sampler:
     #     criterion.weight_dict['sample_reg_loss'] = args.sample_reg_loss
@@ -410,6 +421,9 @@ def main(args):
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
         model_without_ddp = model.module
+        if args.with_dam_mask:
+            teacher_model = torch.nn.parallel.DistributedDataParallel(teacher_model, device_ids=[args.gpu])
+            teacher_model.eval()
 
     if args.dataset_file == "coco_panoptic":
         # We also evaluate AP during panoptic training, on original coco DS
@@ -474,7 +488,8 @@ def main(args):
             sampler_train.set_epoch(epoch)
         train_stats = train_one_epoch(
             model, criterion, data_loader_train, optimizer, device, epoch, args.clip_max_norm, 
-            args, print_freq=args.print_freq)
+            args, teacher_model=teacher_model if args.with_dam_mask else None,
+            print_freq=args.print_freq)
         lr_scheduler.step(epoch)
         if args.output_dir:
             checkpoint_paths = [output_dir / 'checkpoint.pth']

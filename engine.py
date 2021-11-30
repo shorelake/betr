@@ -48,9 +48,11 @@ def get_gt_mask(target, mask_size, device):
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, max_norm: float = 0,
-                    args=None,
+                    args=None, teacher_model=None,
                     print_freq: int = 100):
     model.train()
+    if teacher_model is not None:
+        teacher_model.eval()
     criterion.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
@@ -64,6 +66,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     # for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
     for _ in metric_logger.log_every(range(len(data_loader)), print_freq, header):
         gt_masks = None
+        dam_masks = None
         if args.with_gt_mask:
             gt_masks = []
             _, h, w = samples.mask.shape
@@ -72,13 +75,18 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                 gt_mask = get_gt_mask(target, mask_size, device)
                 gt_masks.append(gt_mask)
             gt_masks = torch.stack(gt_masks)
+        
+        if args.with_dam_mask:
+            with torch.no_grad():
+                dam_masks = teacher_model(samples)
+        
 
         try:
             if args.with_pnp_sampler:
                 # sample_ratio = random.uniform(args.sample_ratio_lower_bound, args.sample_ratio_higher_bound)
                 # sample_ratio = 0.17
                 sample_ratio = args.sample_topk_ratio
-                outputs = model(samples,sample_ratio, gt_masks)
+                outputs = model(samples,sample_ratio, gt_masks, dam_masks)
             else:
                 outputs = model(samples)
         except RuntimeError as exception:
