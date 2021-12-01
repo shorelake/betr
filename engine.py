@@ -134,9 +134,12 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 
 @torch.no_grad()
-def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, output_dir, args, sample_ratio=None):
+def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, output_dir, 
+             args, sample_ratio=None, teacher_model=None):
     model.eval()
     criterion.eval()
+    if teacher_model is not None:
+        teacher_model.eval()
 
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('class_error', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
@@ -157,8 +160,26 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
     for samples, targets in metric_logger.log_every(data_loader, 10, header):
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+        gt_masks = None
+        dam_masks = None
+        if args.with_gt_mask:
+            gt_masks = []
+            _, h, w = samples.mask.shape
+            mask_size = (h,w)
+            for i, target in enumerate(targets):
+                gt_mask = get_gt_mask(target, mask_size, device)
+                gt_masks.append(gt_mask)
+            gt_masks = torch.stack(gt_masks)
+        
+        if args.with_dam_mask:
+            with torch.no_grad():
+                dam_masks = teacher_model(samples)
+        
+
         if args.with_pnp_sampler:
-            outputs = model(samples, sample_ratio=sample_ratio)
+            # sample_ratio = args.sample_topk_ratio
+            outputs = model(samples,sample_ratio, gt_masks, dam_masks)
+            # outputs = model(samples, sample_ratio=sample_ratio)
         else:
             outputs = model(samples)
         loss_dict = criterion(outputs, targets)

@@ -523,7 +523,8 @@ def main(args):
             for sample_ratio in sample_ratios:
                 if args.dataset in ['coco', 'voc'] and epoch % args.eval_every == 0:
                     test_stats, coco_evaluator = evaluate(
-                        model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir, args, sample_ratio
+                        model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir, args,
+                        sample_ratio, teacher_model=teacher_model if args.with_dam_mask else None
                     )
                 else:
                     test_stats = {}
