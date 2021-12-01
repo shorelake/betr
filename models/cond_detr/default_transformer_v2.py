@@ -87,8 +87,8 @@ class Transformer(nn.Module):
         if with_pnp_sampler:
             # self.sampler = SortSamplerWithoutPool(sample_topk_ratio, d_model, score_pred_net=score_pred_net)
             # self.sampler = RandomSampler(sample_topk_ratio, d_model)
-            # self.sampler = GtSampler(sample_topk_ratio, d_model)
-            self.sampler = DAMSampler(sample_topk_ratio, d_model)
+            self.sampler = GtSampler(sample_topk_ratio, d_model)
+            # self.sampler = DAMSampler(sample_topk_ratio, d_model)
 
 
     def _reset_parameters(self):
@@ -192,6 +192,9 @@ class GtSampler(nn.Module):
             sample_ratio = self.topk_ratio
         sample_lens = ((~mask).sum(1)*sample_ratio).int()
         gt_lens = (gt_masks.sum(1)).int()
+        is_zero_gt = gt_lens == 0
+        if is_zero_gt.any():
+            gt_lens[is_zero_gt] = sample_lens.min()
         max_sample_num = sample_lens.max()
         # mask_topk = torch.arange(max_sample_num).expand(len(sample_lens), max_sample_num).to(sample_lens.device) > (sample_lens-1).unsqueeze(1)
         mask_topk = torch.arange(max_sample_num).expand(len(sample_lens), max_sample_num).to(sample_lens.device) > (gt_lens-1).unsqueeze(1)

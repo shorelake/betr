@@ -92,7 +92,6 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         except RuntimeError as exception:
             logger.error(str(exception))
             raise exception
-        
         loss_dict = criterion(outputs, targets)
         if args.with_pnp_sampler:
             loss_dict['sample_reg_loss']=outputs['sample_reg_loss']

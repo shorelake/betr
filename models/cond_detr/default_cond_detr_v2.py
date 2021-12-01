@@ -128,7 +128,7 @@ class ConditionalDETR(nn.Module):
             outputs_coord = tmp.sigmoid()
             outputs_coords.append(outputs_coord)
         outputs_coord = torch.stack(outputs_coords)
-
+        
         outputs_class = self.class_embed(hs)
         out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
         if self.aux_loss:
