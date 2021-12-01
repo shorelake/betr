@@ -1272,10 +1272,8 @@ def build_backbone(args):
 
 if __name__ == '__main__':
     model = swin_tiny(pretrained_path='/home/lbc/pretrained_model/swin_tiny_patch4_window7_224.pth')
-    import pdb;pdb.set_trace()
     inputs = torch.randn([1,3,320,320])
     model = model.cuda()
     inputs = inputs.cuda()
     with torch.no_grad():
         outputs = model(inputs)
-    import pdb;pdb.set_trace()

@@ -127,7 +127,6 @@ class VOCDetection(VisionDataset):
 
             self.imgids.extend(self.convert_image_id(x, to_integer=True) for x in file_names)
             self.imgid2annotations.update(dict(zip(self.imgids, self.annotations)))
-            # import pdb;pdb.set_trace()
 
 
         assert (len(self.images) == len(self.annotations) == len(self.imgids))

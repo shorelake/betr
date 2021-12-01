@@ -219,6 +219,7 @@ class GtSampler(nn.Module):
                 if sample_bg_pd_num > i_sample_bg.size(0):
                     sample_pd_num = sample_bg_pd_num -  i_sample_bg.size(0)
                     i_sample_topk = torch.cat((i_sample_gt, i_sample_bg, i_sample_pd[:sample_pd_num]),0)
+                    sort_confidence_topk.append(i_sample_topk.squeeze(1))
                 else:
                     i_sample_topk = torch.cat((i_sample_gt, i_sample_bg[:sample_bg_pd_num]),0)
                     sort_confidence_topk.append(i_sample_topk.squeeze(1))
