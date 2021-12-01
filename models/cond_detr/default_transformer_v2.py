@@ -58,7 +58,8 @@ class Transformer(nn.Module):
                  kproj_net='2layer-fc', unsample_abstract_number=30, 
                  pos_embed_kproj=False,
                  # random sampler
-                 with_random_sampler=False):
+                 with_random_sampler=False,
+                 args=None):
         super().__init__()
         self.num_feature_levels = num_feature_levels
         if num_feature_levels > 1:
@@ -87,7 +88,10 @@ class Transformer(nn.Module):
         if with_pnp_sampler:
             # self.sampler = SortSamplerWithoutPool(sample_topk_ratio, d_model, score_pred_net=score_pred_net)
             # self.sampler = RandomSampler(sample_topk_ratio, d_model)
-            self.sampler = GtSampler(sample_topk_ratio, d_model)
+            if args.with_gt_mask:
+                self.sampler = GtSampler(sample_topk_ratio, d_model)
+            if args.with_dam_mask:
+                self.sampler = DAMSampler(sample_topk_ratio, d_model)
             # self.sampler = DAMSampler(sample_topk_ratio, d_model)
 
 
@@ -165,7 +169,7 @@ class DAMSampler(nn.Module):
 
         ## reg sample weight to be sparse with l1 loss
         sample_reg_loss = sample_weight.gather(1,sort_confidence_topk).mean()
-        src_sampled = src.gather(0,sort_confidence_topk.permute(1,0)[...,None].expand(-1,-1,c)) *sample_weight.gather(1,sort_confidence_topk).permute(1,0).unsqueeze(-1)
+        src_sampled = src.gather(0,sort_confidence_topk.permute(1,0)[...,None].expand(-1,-1,c))
         pos_embed_sampled = pos_embed.gather(0,sort_confidence_topk.permute(1,0)[...,None].expand(-1,-1,c))
         mask_sampled = mask_topk
 
@@ -188,31 +192,38 @@ class GtSampler(nn.Module):
         # sample_weight_clone[mask.permute(1,0)] = 0.
         sample_weight = gt_masks.float().permute(1,0)
         sample_weight_clone = sample_weight.clone().detach()
+        sample_weight_clone[mask.permute(1,0)] = -1.
+
         if sample_ratio==None:
             sample_ratio = self.topk_ratio
         sample_lens = ((~mask).sum(1)*sample_ratio).int()
         gt_lens = (gt_masks.sum(1)).int()
-        is_zero_gt = gt_lens == 0
-        if is_zero_gt.any():
-            gt_lens[is_zero_gt] = sample_lens.min()
+        # is_zero_gt = gt_lens == 0
+        # if is_zero_gt.any():
+        #     gt_lens[is_zero_gt] = sample_lens.min()
         max_sample_num = sample_lens.max()
         # mask_topk = torch.arange(max_sample_num).expand(len(sample_lens), max_sample_num).to(sample_lens.device) > (sample_lens-1).unsqueeze(1)
-        mask_topk = torch.arange(max_sample_num).expand(len(sample_lens), max_sample_num).to(sample_lens.device) > (gt_lens-1).unsqueeze(1)
+        mask_topk = torch.arange(max_sample_num).expand(len(sample_lens), max_sample_num).to(sample_lens.device) > (sample_lens-1).unsqueeze(1)
         sort_confidence_topk = []
         for i in range(bs):
             i_sample_weight_clone = sample_weight_clone[:,i]
-            i_sample_nonzero = torch.nonzero(i_sample_weight_clone)
-            i_sample_zero = torch.nonzero((i_sample_weight_clone == 0.))
-            i_sample_nonzero_random_idx = torch.randperm(i_sample_nonzero.size(0))
-            i_sample_nonzero = i_sample_nonzero[i_sample_nonzero_random_idx]
-            i_sample_zero_random_idx = torch.randperm(i_sample_zero.size(0))
-            i_sample_zero = i_sample_zero[i_sample_zero_random_idx]
-            if max_sample_num > i_sample_nonzero.size(0):
-                sample_zero_num = max_sample_num - i_sample_nonzero.size(0)
-                i_sample_topk = torch.cat((i_sample_nonzero, i_sample_zero[:sample_zero_num]),0)
-                sort_confidence_topk.append(i_sample_topk.squeeze(1))
+            i_sample_gt = torch.nonzero((i_sample_weight_clone == 1.))
+            i_sample_bg = torch.nonzero((i_sample_weight_clone == 0.))
+            i_sample_pd = torch.nonzero((i_sample_weight_clone == -1.))
+            i_sample_gt_random_idx = torch.randperm(i_sample_gt.size(0))
+            i_sample_gt = i_sample_gt[i_sample_gt_random_idx]
+            i_sample_bg_random_idx = torch.randperm(i_sample_bg.size(0))
+            i_sample_bg = i_sample_bg[i_sample_bg_random_idx]
+            if max_sample_num > i_sample_gt.size(0):
+                sample_bg_pd_num = max_sample_num - i_sample_gt.size(0)
+                if sample_bg_pd_num > i_sample_bg.size(0):
+                    sample_pd_num = sample_bg_pd_num -  i_sample_bg.size(0)
+                    i_sample_topk = torch.cat((i_sample_gt, i_sample_bg, i_sample_pd[:sample_pd_num]),0)
+                else:
+                    i_sample_topk = torch.cat((i_sample_gt, i_sample_bg[:sample_bg_pd_num]),0)
+                    sort_confidence_topk.append(i_sample_topk.squeeze(1))
             else:
-                sort_confidence_topk.append(i_sample_nonzero[:max_sample_num].squeeze(1))
+                sort_confidence_topk.append(i_sample_gt[:max_sample_num].squeeze(1))
         sort_confidence_topk = torch.stack(sort_confidence_topk, dim=1)
 
 
@@ -226,7 +237,7 @@ class GtSampler(nn.Module):
 
         ## reg sample weight to be sparse with l1 loss
         sample_reg_loss = sample_weight.gather(0,sort_confidence_topk).mean()
-        src_sampled = src.gather(0,sort_confidence_topk[...,None].expand(-1,-1,c)) *sample_weight.gather(0,sort_confidence_topk).unsqueeze(-1)
+        src_sampled = src.gather(0,sort_confidence_topk[...,None].expand(-1,-1,c))
         pos_embed_sampled = pos_embed.gather(0,sort_confidence_topk[...,None].expand(-1,-1,c))
         mask_sampled = mask_topk
 
@@ -234,8 +245,8 @@ class GtSampler(nn.Module):
         src = src_sampled
         pos_embed = pos_embed_sampled
         mask = mask_sampled
-        comp_lens = torch.tensor([min(gt_lens[0],max_sample_num), min(gt_lens[1],max_sample_num)],dtype=torch.int32,device=mask.device)
-        assert ((~mask).sum(1)==comp_lens).all()
+        # comp_lens = torch.tensor([min(gt_lens[0],max_sample_num), min(gt_lens[1],max_sample_num)],dtype=torch.int32,device=mask.device)
+        assert ((~mask).sum(1)==sample_lens).all()
         return src, sample_reg_loss, None, mask, pos_embed
 
 class RandomSampler(nn.Module):
@@ -280,7 +291,7 @@ class RandomSampler(nn.Module):
 
         ## reg sample weight to be sparse with l1 loss
         sample_reg_loss = sample_weight.gather(0,sort_confidence_topk).mean()
-        src_sampled = src.gather(0,sort_confidence_topk[...,None].expand(-1,-1,c)) *sample_weight.gather(0,sort_confidence_topk).unsqueeze(-1)
+        src_sampled = src.gather(0,sort_confidence_topk[...,None].expand(-1,-1,c))
         pos_embed_sampled = pos_embed.gather(0,sort_confidence_topk[...,None].expand(-1,-1,c))
         mask_sampled = mask_topk
 
@@ -758,6 +769,7 @@ def build_transformer(args):
         num_feature_levels=args.num_feature_levels,
         with_pnp_sampler=args.with_pnp_sampler,
         sample_topk_ratio=args.sample_topk_ratio,
+        args=args,
     )
 
 
