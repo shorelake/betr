@@ -255,8 +255,8 @@ def main(args):
         teacher_model.to(device)
         
     # model, criterion, postprocessors = build_model(args)
-    # if args.with_pnp_sampler:
-    #     criterion.weight_dict['sample_reg_loss'] = args.sample_reg_loss
+    if args.with_pnp_sampler:
+        criterion.weight_dict['sample_reg_loss'] = args.sample_reg_loss
     model.to(device)
     if getattr(model.backbone[0], 'backbone_names', None) is not None:
         # print('*'*30)
