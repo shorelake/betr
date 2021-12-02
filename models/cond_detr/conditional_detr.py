@@ -62,7 +62,7 @@ class ConditionalDETR(nn.Module):
         self.with_pnp_sampler = with_pnp_sampler
 
 
-    def forward(self, samples: NestedTensor, sample_ratio=None):
+    def forward(self, samples: NestedTensor, sample_ratio=None, gt_masks=None, dam_masks=None):
         """ The forward expects a NestedTensor, which consists of:
                - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
                - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
@@ -88,7 +88,7 @@ class ConditionalDETR(nn.Module):
             assert mask is not None
             src = self.input_proj(src)
             if self.with_pnp_sampler:
-                hs, init_reference, inter_references, outputs_coord,  outputs_class, sample_reg_loss= self.transformer(src, mask, query_embeds, pos[-1], sample_ratio)
+                hs, init_reference, inter_references, outputs_coord,  outputs_class, sample_reg_loss= self.transformer(src, mask, query_embeds, pos[-1], sample_ratio, gt_masks, dam_masks)
             else:
                 hs, init_reference, inter_references, outputs_coord,  outputs_class= self.transformer(src, mask, query_embeds, pos[-1])
 

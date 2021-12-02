@@ -128,7 +128,7 @@ class Transformer(nn.Module):
 
             
 
-    def forward(self, src, mask, query_embed, pos_embed, sample_ratio=None):
+    def forward(self, src, mask, query_embed, pos_embed, sample_ratio=None, gt_masks=None, dam_masks=None):
         # import pdb;pdb.set_trace()
         if self.num_feature_levels == 1:
             # flatten NxCxHxW to HWxNxC
