@@ -489,7 +489,7 @@ class SortSampler(nn.Module):
         self.v_proj = nn.Linear(input_dim, input_dim)
         self.pos_embed_kproj = pos_embed_kproj
 
-    def forward(self, src, mask, pos_embed, sample_ratio):
+    def forward(self, src, mask, pos_embed, sample_ratio, gt_masks, dam_masks):
         # bs,c ,h, w  = src.shape
         _, bs, c = src.shape
         sample_weight = self.score_pred_net(src.transpose(0,1)).sigmoid().view(bs,-1)
