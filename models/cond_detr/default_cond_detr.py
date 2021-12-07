@@ -28,11 +28,14 @@ from models.matcher import build_matcher
 from models.segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
 from .default_transformer import build_transformer
+from models.cnn_necks import build_cnn_encoder
+from models import cnn_necks
 
-
+from loguru import logger
 class ConditionalDETR(nn.Module):
     """ This is the Conditional DETR module that performs object detection """
-    def __init__(self, backbone, transformer, num_classes, num_queries, num_feature_levels, aux_loss=False, with_pnp_sampler=False):
+    def __init__(self, backbone, transformer, num_classes, num_queries, num_feature_levels, aux_loss=False, 
+                 with_pnp_sampler=False, cnn_neck=None):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -50,15 +53,29 @@ class ConditionalDETR(nn.Module):
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
         self.query_embed = nn.Embedding(num_queries, hidden_dim)
         self.num_feature_levels = num_feature_levels
+        self.cnn_encoder = None
         if num_feature_levels > 1:
             num_backbone_outs = len(backbone.strides)
             input_proj_list = []
-            for _ in range(num_backbone_outs):
-                in_channels = backbone.num_channels[_]
+            if cnn_neck is None:
+                for _ in range(num_backbone_outs):
+                    in_channels = backbone.num_channels[_]
+                    input_proj_list.append(nn.Sequential(
+                        nn.Conv2d(in_channels, hidden_dim, kernel_size=1),
+                        nn.GroupNorm(32, hidden_dim),
+                    ))
+            else:
+                in_channels_list = []
+                for _ in range(num_backbone_outs):
+                    in_channels = backbone.num_channels[_]
+                    in_channels_list.append(in_channels)
+                self.cnn_encoder = build_cnn_encoder(cnn_neck, num_backbone_outs, in_channels_list, hidden_dim)
+            for _ in range(num_feature_levels - num_backbone_outs):
                 input_proj_list.append(nn.Sequential(
-                    nn.Conv2d(in_channels, hidden_dim, kernel_size=1),
+                    nn.Conv2d(in_channels, hidden_dim, kernel_size=3, stride=2, padding=1),
                     nn.GroupNorm(32, hidden_dim),
                 ))
+                in_channels = hidden_dim
             self.input_proj = nn.ModuleList(input_proj_list)
             for proj in self.input_proj:
                 nn.init.xavier_uniform_(proj[0].weight, gain=1)
@@ -104,15 +121,56 @@ class ConditionalDETR(nn.Module):
             assert mask is not None
             hs, reference = self.transformer(self.input_proj(src), mask, self.query_embed.weight, pos[-1])
         else:
-            srcs = []
-            masks = []
-            poses = []
-            for l, (feat,lvl_pos) in enumerate(zip(features,pos)):
-                src, mask = feat.decompose()
-                srcs.append(self.input_proj[l](src))
-                masks.append(mask)
-                assert mask is not None
-                poses.append(lvl_pos)
+            if self.cnn_encoder is None:
+                srcs = []
+                masks = []
+                poses = []
+                for l, (feat,lvl_pos) in enumerate(zip(features,pos)):
+                    src, mask = feat.decompose()
+                    srcs.append(self.input_proj[l](src))
+                    masks.append(mask)
+                    assert mask is not None
+                    poses.append(lvl_pos)
+                if self.num_feature_levels > len(srcs):
+                    _len_srcs = len(srcs)
+                    for l in range(_len_srcs, self.num_feature_levels):
+                        if l == _len_srcs:
+                            src = self.input_proj[l](features[-1].tensors)
+                        else:
+                            src = self.input_proj[l](srcs[-1])
+                        m = samples.mask
+                        mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
+                        pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)
+                        srcs.append(src)
+                        masks.append(mask)
+                        poses.append(pos_l)
+            else:
+                srcs = []
+                masks = []
+                for l, feat in enumerate(features):
+                    src, mask = feat.decompose()
+                    srcs.append(src)
+                    masks.append(mask)
+                    assert mask is not None
+                srcs = self.cnn_encoder(srcs)
+                if self.num_feature_levels > len(srcs):
+                    _len_srcs = len(srcs)
+                    input_proj_index = 0
+                    for l in range(_len_srcs, self.num_feature_levels):
+                        
+                        if l == _len_srcs:
+                            src = self.input_proj[input_proj_index](features[-1].tensors)
+                        else:
+                            src = self.input_proj[input_proj_index](srcs[-1])
+                        m = samples.mask
+                        mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
+                        pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)
+                        srcs.append(src)
+                        masks.append(mask)
+                        pos.append(pos_l)
+                        input_proj_index = input_proj_index + 1
+                poses = pos
+
             # hs, reference = self.transformer(srcs, masks, self.query_embed.weight, poses)
             if self.with_pnp_sampler:
                 hs, reference, sample_reg_loss = self.transformer(srcs, masks, self.query_embed.weight, poses, sample_ratio)
@@ -390,7 +448,10 @@ def build(args):
     backbone = build_backbone(args)
 
     transformer = build_transformer(args)
-
+    neck_encoder = args.neck_encoder
+    if not neck_encoder in cnn_necks.__all__:
+        logger.warning(f'neck_encoder is {neck_encoder}, NOT using CNN necks')
+        neck_encoder = None
     model = ConditionalDETR(
         backbone,
         transformer,
@@ -399,6 +460,7 @@ def build(args):
         num_feature_levels=args.num_feature_levels,
         aux_loss=args.aux_loss,
         with_pnp_sampler=args.with_pnp_sampler,
+        cnn_neck=neck_encoder,
     )
     if args.masks:
         model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))

@@ -3,6 +3,7 @@ from .fpn import FeaturePyramidNetwork as fpn
 from .PANet import fpn as panet
 from loguru import logger
 
+__all__ = ['fpn', 'panet']
 
 def build_cnn_encoder(cnn_encoder, num_backbone_outs, backbone_num_channels,hidden_dim):
     if cnn_encoder == 'fpn':

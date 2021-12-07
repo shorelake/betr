@@ -73,12 +73,12 @@ class BackboneBase(nn.Module):
                 parameter.requires_grad_(False)
         if return_interm_layers:
             # return_layers = {"layer1": "0", "layer2": "1", "layer3": "2", "layer4": "3"}
-            # return_layers = {"layer2": "0", "layer3": "1", "layer4": "2"}
-            # self.strides = [8, 16, 32]
-            # self.num_channels = [512, 1024, 2048]
-            return_layers = {"layer3": "0", "layer4": "1"}
-            self.strides = [16, 32]
-            self.num_channels = [1024, 2048]
+            return_layers = {"layer2": "0", "layer3": "1", "layer4": "2"}
+            self.strides = [8, 16, 32]
+            self.num_channels = [512, 1024, 2048]
+            # return_layers = {"layer3": "0", "layer4": "1"}
+            # self.strides = [16, 32]
+            # self.num_channels = [1024, 2048]
         else:
             return_layers = {'layer4': "0"}
             self.strides = [32]

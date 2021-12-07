@@ -101,7 +101,7 @@ def get_args_parser():
     parser.add_argument('--num_feature_levels', default=4, type=int, help='number of feature levels')
     # DefDETR
     ## Neck encoder
-    parser.add_argument('--neck_encoder', default='deftransformer', type=str,
+    parser.add_argument('--neck_encoder', default=None, type=str,
                         help="Name of the neck_encoder to use, now support deftransformer default, FPN, deftransformerwithdettoks") #TODO
     ## for transformer encoder
     parser.add_argument('--msi_sso', default=None, type=int,
