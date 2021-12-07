@@ -9,7 +9,11 @@
 # Modified from Deformable DETR (https://github.com/fundamentalvision/Deformable-DETR)
 # Copyright (c) 2020 SenseTime. All Rights Reserved.
 # ------------------------------------------------------------------------
-
+# feature:
+# 1. support pnp sample token
+# 2. support two scale
+#
+# ------------------------------------------------------------------------
 import math
 import torch
 import torch.nn.functional as F
@@ -25,6 +29,7 @@ from models.matcher import build_matcher
 from models.segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
 from .default_transformer_v2 import build_transformer
+
 
 
 class ConditionalDETR(nn.Module):

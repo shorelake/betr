@@ -9,6 +9,9 @@
 # Modified from Deformable DETR (https://github.com/fundamentalvision/Deformable-DETR)
 # Copyright (c) 2020 SenseTime. All Rights Reserved.
 # ------------------------------------------------------------------------
+# feature:
+# 1. support two scale
+# ------------------------------------------------------------------------
 
 import math
 import torch

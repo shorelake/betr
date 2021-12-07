@@ -147,15 +147,12 @@ class SortSamplerWithGT(nn.Module):
         super().__init__()
         self.topk_ratio = topk_ratio
         if score_pred_net == '2layer-fc-256':
-            self.score_pred_net = nn.Sequential(nn.Linear(input_dim, input_dim),
-                                                 nn.ReLU(),
-                                                 nn.Linear(input_dim, 1, 1))
-        elif score_pred_net == '2layer-fc-16':
-            self.score_pred_net = nn.Sequential(nn.Linear(input_dim, 16, 1),
-                                                 nn.ReLU(),
-                                                 nn.Linear(16, 1, 1))
-        elif score_pred_net == '1layer-fc':
-            self.score_pred_net = nn.Linear(input_dim, 1, 1)
+            # self.score_pred_net = nn.Sequential(nn.Linear(input_dim, input_dim),
+            #                                      nn.ReLU(),
+            #                                      nn.Linear(input_dim, 1, 1))
+            self.in_conv = nn.Sequential(nn.Linear(input_dim, input_dim),
+                                         nn.ReLU())
+            self.out_coov = nn.Linear(input_dim, 1, 1)
         else:
             raise ValueError
 
@@ -175,7 +172,14 @@ class SortSamplerWithGT(nn.Module):
     def forward(self, src, mask, pos_embed, sample_ratio, gt_masks, dam_masks):
         # bs,c ,h, w  = src.shape
         _, bs, c = src.shape
-        sample_weight = self.score_pred_net(src.transpose(0,1)).sigmoid().view(bs,-1)
+        x = self.in_conv(src.transpose(0,1))
+        B,N,C = x.shape
+        local_x = x[:,:,:C//2]
+        global_x = x[:,:,C//2:].sum(dim=1,keepdim=True)
+        x = torch.cat([local_x, global_x.expand(B,N,C//2)],dim=-1)
+        sample_weight = self.out_coov(x).sigmoid().view(bs,-1)
+
+        # sample_weight = self.score_pred_net(src.transpose(0,1)).sigmoid().view(bs,-1)
         # sample_weight[mask] = sample_weight[mask].clone() * 0.
         # sample_weight.data[mask] = 0.
         sample_weight_clone = sample_weight.clone().detach()
@@ -225,7 +229,7 @@ class SortSamplerWithGT(nn.Module):
 
         ## reg sample weight to be align with gt using BCE loss
         sample_reg_loss = torch.nn.BCELoss()(sample_weight, gt_masks.float())
-        src_sampled = src.gather(0,sort_confidence_topk.permute(1,0)[...,None].expand(-1,-1,c)) *sample_weight.gather(1,sort_confidence_topk).permute(1,0).unsqueeze(-1)
+        src_sampled = src.gather(0,sort_confidence_topk.permute(1,0)[...,None].expand(-1,-1,c)) 
         pos_embed_sampled = pos_embed.gather(0,sort_confidence_topk.permute(1,0)[...,None].expand(-1,-1,c))
         mask_sampled = mask_topk
 

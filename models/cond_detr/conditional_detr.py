@@ -9,7 +9,12 @@
 # Modified from Deformable DETR (https://github.com/fundamentalvision/Deformable-DETR)
 # Copyright (c) 2020 SenseTime. All Rights Reserved.
 # ------------------------------------------------------------------------
-
+# feature:
+# 1. support pnp sample token
+# 2. support two scale
+# 3. support anchor prior
+# 4. support scale embedding
+# ------------------------------------------------------------------------
 import math
 import torch
 import torch.nn.functional as F
