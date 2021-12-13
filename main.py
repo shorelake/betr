@@ -215,6 +215,10 @@ def get_args_parser():
     parser.add_argument('--with_dam_mask', action='store_true')
     # set cross update query & memory in w/o encoder
     parser.add_argument('--cross_update', action='store_true')
+
+    # * Efficient DETR
+    parser.add_argument('--eff_query_init', default=False, action='store_true')
+    parser.add_argument('--eff_specific_head', default=False, action='store_true')
     return parser
 
 

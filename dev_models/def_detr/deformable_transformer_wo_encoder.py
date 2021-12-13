@@ -34,6 +34,9 @@ class DeformableTransformer(nn.Module):
         self.two_stage = two_stage
         self.two_stage_num_proposals = two_stage_num_proposals
 
+        self.eff_query_init = args.eff_query_init
+        self.eff_specific_head = args.eff_specific_head
+
         decoder_layer = DeformableTransformerDecoderLayer(d_model, dim_feedforward,
                                                           dropout, activation,
                                                           num_feature_levels, nhead, dec_n_points)
@@ -44,8 +47,8 @@ class DeformableTransformer(nn.Module):
         if two_stage:
             self.enc_output = nn.Linear(d_model, d_model)
             self.enc_output_norm = nn.LayerNorm(d_model)
-            self.pos_trans = nn.Linear(d_model * 2, d_model * 2)
-            self.pos_trans_norm = nn.LayerNorm(d_model * 2)
+            self.pos_trans = nn.Linear(d_model * 2, d_model * (1 if self.eff_query_init else 2))
+            self.pos_trans_norm = nn.LayerNorm(d_model * (1 if self.eff_query_init else 2))
         else:
             self.reference_points = nn.Linear(d_model, 2)
 
@@ -160,13 +163,27 @@ class DeformableTransformer(nn.Module):
             enc_outputs_coord_unact = self.decoder.bbox_embed[self.decoder.num_layers](output_memory) + output_proposals
 
             topk = self.two_stage_num_proposals
-            topk_proposals = torch.topk(enc_outputs_class[..., 0], topk, dim=1)[1]
+            if self.eff_specific_head:
+                # take the best score for judging objectness with class specific head
+                enc_outputs_fg_class = enc_outputs_class.topk(1, dim=2).values[... , 0]
+            else:
+                # take the score from the binary(fore/background) classfier 
+                # though outputs have 91 output dim, the 1st dim. alone will be used for the loss computation.
+                enc_outputs_fg_class = enc_outputs_class[..., 0]
+
+            topk_proposals = torch.topk(enc_outputs_fg_class, topk, dim=1)[1]
             topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
             topk_coords_unact = topk_coords_unact.detach()
             reference_points = topk_coords_unact.sigmoid()
             init_reference_out = reference_points
             pos_trans_out = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords_unact)))
-            query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
+
+            if self.eff_query_init:
+                # Efficient-DETR uses top-k memory as the initialization of `tgt` (query vectors)
+                tgt = torch.gather(memory, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, memory.size(-1)))
+                query_embed = pos_trans_out
+            else:
+                query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
         else:
             if not self.init_query_from_backbone:
                 query_embed, tgt = torch.split(query_embed, c, dim=1)

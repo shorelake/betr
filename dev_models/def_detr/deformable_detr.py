@@ -218,7 +218,7 @@ class SetCriterion(nn.Module):
         1) we compute hungarian assignment between ground truth boxes and the outputs of the model
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
-    def __init__(self, num_classes, matcher, weight_dict, losses, focal_alpha=0.25):
+    def __init__(self, num_classes, matcher, weight_dict, losses, eff_specific_head=False, focal_alpha=0.25):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -233,6 +233,7 @@ class SetCriterion(nn.Module):
         self.weight_dict = weight_dict
         self.losses = losses
         self.focal_alpha = focal_alpha
+        self.eff_specific_head = eff_specific_head
 
     def loss_labels(self, outputs, targets, indices, num_boxes, log=True):
         """Classification loss (NLL)
@@ -390,8 +391,9 @@ class SetCriterion(nn.Module):
         if 'enc_outputs' in outputs:
             enc_outputs = outputs['enc_outputs']
             bin_targets = copy.deepcopy(targets)
-            for bt in bin_targets:
-                bt['labels'] = torch.zeros_like(bt['labels'])
+            if not self.eff_specific_head:
+                for bt in bin_targets:
+                    bt['labels'] = torch.zeros_like(bt['labels'])
             indices = self.matcher(enc_outputs, bin_targets)
             for loss in self.losses:
                 if loss == 'masks':
@@ -515,7 +517,7 @@ def build(args):
     if args.masks:
         losses += ["masks"]
     # num_classes, matcher, weight_dict, losses, focal_alpha=0.25
-    criterion = SetCriterion(num_classes, matcher, weight_dict, losses, focal_alpha=args.focal_alpha)
+    criterion = SetCriterion(num_classes, matcher, weight_dict, losses, eff_specific_head=args.eff_specific_head, focal_alpha=args.focal_alpha)
     criterion.to(device)
     postprocessors = {'bbox': PostProcess()}
     if args.masks:
