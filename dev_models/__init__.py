@@ -6,7 +6,7 @@
 # Modified from DETR (https://github.com/facebookresearch/detr)
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 # ------------------------------------------------------------------------
-
+from dev_models import cond_detr
 from loguru import logger
 
 def build_model(args):
@@ -18,6 +18,10 @@ def build_model(args):
         from dev_models.vidt import build_vidt
         logger.info("build vit backbone vidt detector")
         return build_vidt(args)
+    elif args.detector in cond_detr.__all__:
+        from dev_models.cond_detr import build_conditionaldetr
+        logger.info("build vit backbone conditional detr")
+        return build_conditionaldetr(args)
     else:
         logger.error(f"Wrong vit backbone detector name {args.detector}")
         raise ValueError(f"Wrong vit backbone detector name {args.detector}")
