@@ -26,9 +26,9 @@ class DeformableTransformer(nn.Module):
                  activation="relu", return_intermediate_dec=False,
                  num_feature_levels=4, dec_n_points=4,  enc_n_points=4,
                  two_stage=False, two_stage_num_proposals=300,
-                 args=None):
+                 args=None, num_classes=91):
         super().__init__()
-
+        self.num_classes = num_classes
         self.d_model = d_model
         self.nhead = nhead
         self.two_stage = two_stage
@@ -55,6 +55,17 @@ class DeformableTransformer(nn.Module):
         self.init_query_from_backbone = args.init_query_from_backbone
 
         self._reset_parameters()
+        if two_stage:
+            self.class_embed = nn.Linear(d_model, num_classes)
+            self.bbox_embed = MLP(d_model, d_model, 4, 3)
+
+            prior_prob = 0.01
+            bias_value = -math.log((1 - prior_prob) / prior_prob)
+            self.class_embed.bias.data = torch.ones(num_classes) * bias_value
+
+            nn.init.constant_(self.bbox_embed.layers[-1].weight.data, 0)
+            nn.init.constant_(self.bbox_embed.layers[-1].bias.data, 0)
+            nn.init.constant_(self.bbox_embed.layers[-1].bias.data[2:], 0.0)
 
     def _reset_parameters(self):
         for p in self.parameters():
@@ -67,6 +78,15 @@ class DeformableTransformer(nn.Module):
             xavier_uniform_(self.reference_points.weight.data, gain=1.0)
             constant_(self.reference_points.bias.data, 0.)
         normal_(self.level_embed)
+
+        # if self.two_stage:
+        #     prior_prob = 0.01
+        #     bias_value = -math.log((1 - prior_prob) / prior_prob)
+        #     self.class_embed.bias.data = torch.ones(self.num_classes) * bias_value
+
+        #     nn.init.constant_(self.bbox_embed.layers[-1].weight.data, 0)
+        #     nn.init.constant_(self.bbox_embed.layers[-1].bias.data, 0)
+        #     nn.init.constant_(self.bbox_embed.layers[-1].bias.data[2:], 0.0)
 
     def get_proposal_pos_embed(self, proposals):
         num_pos_feats = 128
@@ -157,10 +177,9 @@ class DeformableTransformer(nn.Module):
         bs, _, c = memory.shape
         if self.two_stage:
             output_memory, output_proposals = self.gen_encoder_output_proposals(memory, mask_flatten, spatial_shapes)
-
             # hack implementation for two-stage Deformable DETR
-            enc_outputs_class = self.decoder.class_embed[self.decoder.num_layers](output_memory)
-            enc_outputs_coord_unact = self.decoder.bbox_embed[self.decoder.num_layers](output_memory) + output_proposals
+            enc_outputs_class = self.class_embed(output_memory)
+            enc_outputs_coord_unact = self.bbox_embed(output_memory) + output_proposals
 
             topk = self.two_stage_num_proposals
             if self.eff_specific_head:
@@ -306,6 +325,19 @@ class DeformableTransformerDecoder(nn.Module):
 
         return output, reference_points
 
+class MLP(nn.Module):
+    """ Very simple multi-layer perceptron (also called FFN)"""
+
+    def __init__(self, input_dim, hidden_dim, output_dim, num_layers):
+        super().__init__()
+        self.num_layers = num_layers
+        h = [hidden_dim] * (num_layers - 1)
+        self.layers = nn.ModuleList(nn.Linear(n, k) for n, k in zip([input_dim] + h, h + [output_dim]))
+
+    def forward(self, x):
+        for i, layer in enumerate(self.layers):
+            x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
+        return x
 
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])

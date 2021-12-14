@@ -99,7 +99,8 @@ class DeformableDETR(nn.Module):
             nn.init.constant_(proj[0].bias, 0)
 
         # if two-stage, the last class_embed and bbox_embed is for region proposal generation
-        num_pred = (transformer.decoder.num_layers + 1) if two_stage else transformer.decoder.num_layers
+        # num_pred = (transformer.decoder.num_layers + 1) if two_stage else transformer.decoder.num_layers
+        num_pred = transformer.decoder.num_layers
         if with_box_refine:
             self.class_embed = _get_clones(self.class_embed, num_pred)
             self.bbox_embed = _get_clones(self.bbox_embed, num_pred)
@@ -235,7 +236,7 @@ class SetCriterion(nn.Module):
         self.focal_alpha = focal_alpha
         self.eff_specific_head = eff_specific_head
 
-    def loss_labels(self, outputs, targets, indices, num_boxes, log=True):
+    def loss_labels(self, outputs, targets, indices, num_boxes, log=True, enc_outputs=False):
         """Classification loss (NLL)
         targets dicts must contain the key "labels" containing a tensor of dim [nb_target_boxes]
         """
@@ -244,7 +245,11 @@ class SetCriterion(nn.Module):
 
         idx = self._get_src_permutation_idx(indices)
         target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
-        target_classes = torch.full(src_logits.shape[:2], self.num_classes,
+        if not enc_outputs:
+            num_classes = self.num_classes
+        else:
+            num_classes = src_logits.shape[-1]
+        target_classes = torch.full(src_logits.shape[:2], num_classes,
                                     dtype=torch.int64, device=src_logits.device)
         target_classes[idx] = target_classes_o
 
@@ -403,6 +408,7 @@ class SetCriterion(nn.Module):
                 if loss == 'labels':
                     # Logging is enabled only for the last layer
                     kwargs['log'] = False
+                    kwargs['enc_outputs'] = True
                 l_dict = self.get_loss(loss, enc_outputs, bin_targets, indices, num_boxes, **kwargs)
                 l_dict = {k + f'_enc': v for k, v in l_dict.items()}
                 losses.update(l_dict)
