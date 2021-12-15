@@ -177,19 +177,23 @@ class DeformableDETR(nn.Module):
         outputs_classes = []
         outputs_coords = []
         for lvl in range(hs.shape[0]):
-            if lvl == 0:
-                reference = init_reference
+            if self.training:
+                if lvl == 0:
+                    reference = init_reference
+                else:
+                    reference = inter_references[lvl - 1]
+                reference = inverse_sigmoid(reference)
+                outputs_class = self.class_embed[lvl](hs[lvl])
+                tmp = self.bbox_embed[lvl](hs[lvl])
+                if reference.shape[-1] == 4:
+                    tmp += reference
+                else:
+                    assert reference.shape[-1] == 2
+                    tmp[..., :2] += reference
+                outputs_coord = tmp.sigmoid()
             else:
-                reference = inter_references[lvl - 1]
-            reference = inverse_sigmoid(reference)
-            outputs_class = self.class_embed[lvl](hs[lvl])
-            tmp = self.bbox_embed[lvl](hs[lvl])
-            if reference.shape[-1] == 4:
-                tmp += reference
-            else:
-                assert reference.shape[-1] == 2
-                tmp[..., :2] += reference
-            outputs_coord = tmp.sigmoid()
+                outputs_class = self.class_embed[lvl](hs[lvl])
+                outputs_coord = inter_references[lvl]
             outputs_classes.append(outputs_class)
             outputs_coords.append(outputs_coord)
         outputs_class = torch.stack(outputs_classes)
@@ -490,8 +494,8 @@ def build(args):
         if args.init_query_from_backbone or 'yolos' in args.vit_backbone:
             logger.error(f'not support with encoder for init_query_from_backbone {args.init_query_from_backbone} or vit backbone {args.vit_backbone}')
             raise ValueError(f'not support with encoder for init_query_from_backbone {args.init_query_from_backbone} or vit backbone {args.vit_backbone}')
-        logger.info("build tranformer neck with encoder")
-        transformer = build_deforamble_transformer(args)
+        logger.info(f"build tranformer neck with {args.enc_layers} encoder")
+        transformer = build_deforamble_transformer_wo_encoder(args)
     model = DeformableDETR(
         backbone,
         transformer,

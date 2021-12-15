@@ -22,11 +22,13 @@ from loguru import logger
 
 class DeformableTransformer(nn.Module):
     def __init__(self, d_model=256, nhead=8,
-                 num_decoder_layers=6, dim_feedforward=1024, dropout=0.1,
+                 num_encoder_layers=6, num_decoder_layers=6, dim_feedforward=1024, dropout=0.1,
                  activation="relu", return_intermediate_dec=False,
                  num_feature_levels=4, dec_n_points=4,  enc_n_points=4,
                  two_stage=False, two_stage_num_proposals=300,
-                 args=None, num_classes=91):
+                 args=None, num_classes=91,
+                 # msi_sso_encoder param
+                 msi_sso_encoder=None):
         super().__init__()
         self.num_classes = num_classes
         self.d_model = d_model
@@ -36,13 +38,37 @@ class DeformableTransformer(nn.Module):
 
         self.eff_query_init = args.eff_query_init
         self.eff_specific_head = args.eff_specific_head
-
+        encoder_layer = DeformableTransformerEncoderLayer(d_model, dim_feedforward,
+                                                          dropout, activation,
+                                                          num_feature_levels, nhead, enc_n_points)
+        self.encoder = DeformableTransformerEncoder(encoder_layer, num_encoder_layers) if num_encoder_layers !=0 else None
         decoder_layer = DeformableTransformerDecoderLayer(d_model, dim_feedforward,
                                                           dropout, activation,
                                                           num_feature_levels, nhead, dec_n_points)
         self.decoder = DeformableTransformerDecoder(decoder_layer, num_decoder_layers, return_intermediate_dec)
 
         self.level_embed = nn.Parameter(torch.Tensor(num_feature_levels, d_model))
+
+        self.msi_sso_encoder = None
+        if num_feature_levels > 1:
+            if msi_sso_encoder is not None:
+                logger.info(f'build --msi_sso_encoder {msi_sso_encoder}')
+                msi_sso_encoder_layer = MsiSsoDeformableTransformerEncoderLayer(d_model, dim_feedforward,
+                                                          dropout, activation,
+                                                          num_feature_levels, nhead, enc_n_points)
+                self.msi_sso_encoder = MsiSsoDeformableTransformerEncoder(msi_sso_encoder_layer, 1)
+                if msi_sso_encoder == 'msi_sso_p4':
+                    self.sso_index = 1
+                elif msi_sso_encoder == 'msi_sso_p3':
+                    self.sso_index = 0
+                elif msi_sso_encoder == 'msi_sso_p5':
+                    self.sso_index = 2
+                else:
+                    logger.error(f'ERROR, WRONG --msi_sso_encoder {msi_sso_encoder}')
+                    raise ValueError(f'ERROR, WRONG --msi_sso_encoder {msi_sso_encoder}')
+                if self.sso_index > num_feature_levels -1:
+                    logger.error(f'WRONG, --msi_sso_encoder {msi_sso_encoder}, --num_feature_levels {num_feature_levels}')
+                    raise ValueError(f'WRONG, --msi_sso_encoder {msi_sso_encoder}, --num_feature_levels {num_feature_levels}')
 
         if two_stage:
             self.enc_output = nn.Linear(d_model, d_model)
@@ -172,7 +198,15 @@ class DeformableTransformer(nn.Module):
 
         # # encoder
         # memory = self.encoder(src_flatten, spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten, mask_flatten)
-        memory = src_flatten
+        if self.encoder is not None:
+            memory = self.encoder(src_flatten, spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten, mask_flatten)
+        else:
+            memory = src_flatten
+        
+        # # msi_sso_encoder
+        if self.msi_sso_encoder is not None:
+            memory, spatial_shapes, level_start_index, valid_ratios,lvl_pos_embed_flatten, mask_flatten = \
+                self.msi_sso_encoder(memory, spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten, mask_flatten, self.sso_index)
         # prepare input for decoder
         bs, _, c = memory.shape
         if self.two_stage:
@@ -213,7 +247,6 @@ class DeformableTransformer(nn.Module):
                 tgt = tgt
             reference_points = self.reference_points(query_embed).sigmoid()
             init_reference_out = reference_points
-
         # decoder
         hs, inter_references = self.decoder(tgt, reference_points, memory,
                                             spatial_shapes, level_start_index, valid_ratios, query_embed, mask_flatten)
@@ -222,6 +255,159 @@ class DeformableTransformer(nn.Module):
         if self.two_stage:
             return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact
         return hs, init_reference_out, inter_references_out, None, None
+
+class MsiSsoDeformableTransformerEncoderLayer(nn.Module):
+    def __init__(self,
+                 d_model=256, d_ffn=1024,
+                 dropout=0.1, activation="relu",
+                 n_levels=4, n_heads=8, n_points=4):
+        super().__init__()
+
+        # self attention
+        self.self_attn = MSDeformAttn(d_model, n_levels, n_heads, n_points)
+        self.dropout1 = nn.Dropout(dropout)
+        self.norm1 = nn.LayerNorm(d_model)
+
+        # ffn
+        self.linear1 = nn.Linear(d_model, d_ffn)
+        self.activation = _get_activation_fn(activation)
+        self.dropout2 = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(d_ffn, d_model)
+        self.dropout3 = nn.Dropout(dropout)
+        self.norm2 = nn.LayerNorm(d_model)
+
+    @staticmethod
+    def with_pos_embed(tensor, pos):
+        return tensor if pos is None else tensor + pos
+
+    def forward_ffn(self, src):
+        src2 = self.linear2(self.dropout2(self.activation(self.linear1(src))))
+        src = src + self.dropout3(src2)
+        src = self.norm2(src)
+        return src
+
+    def forward(self, src, pos, reference_points, spatial_shapes, level_start_index, padding_mask=None,tgt=None):
+        # self attention
+        tgt2 = self.self_attn(self.with_pos_embed(tgt, pos), reference_points, src, spatial_shapes, level_start_index, padding_mask)
+        tgt = tgt + self.dropout1(tgt2)
+        tgt = self.norm1(tgt)
+
+        # ffn
+        tgt = self.forward_ffn(tgt)
+
+        return tgt
+
+
+class MsiSsoDeformableTransformerEncoder(nn.Module):
+    def __init__(self, encoder_layer, num_layers):
+        super().__init__()
+        self.layers = _get_clones(encoder_layer, num_layers)
+        self.num_layers = num_layers
+
+    @staticmethod
+    def get_reference_points(spatial_shapes, valid_ratios, device):
+        reference_points_list = []
+        for lvl, (H_, W_) in enumerate(spatial_shapes):
+
+            ref_y, ref_x = torch.meshgrid(torch.linspace(0.5, H_ - 0.5, H_, dtype=torch.float32, device=device),
+                                          torch.linspace(0.5, W_ - 0.5, W_, dtype=torch.float32, device=device))
+            ref_y = ref_y.reshape(-1)[None] / (valid_ratios[:, None, lvl, 1] * H_)
+            ref_x = ref_x.reshape(-1)[None] / (valid_ratios[:, None, lvl, 0] * W_)
+            ref = torch.stack((ref_x, ref_y), -1)
+            reference_points_list.append(ref)
+        reference_points = torch.cat(reference_points_list, 1)
+        reference_points = reference_points[:, :, None] * valid_ratios[:, None]
+        return reference_points
+
+    def forward(self, src, spatial_shapes, level_start_index, valid_ratios, pos=None, padding_mask=None, sso_index=None):
+        output = src
+        reference_points = self.get_reference_points(spatial_shapes, valid_ratios, device=src.device)
+        sso_start = level_start_index[sso_index]
+        sso_end = level_start_index[sso_index+1] if sso_index < level_start_index.shape[0] else -1
+        tgt = output[:,sso_start:sso_end,:]
+        ret_pos = pos[:, sso_start:sso_end, :]
+        ret_spatial_shapes = spatial_shapes[sso_index].unsqueeze(0)
+        ret_level_start_index = level_start_index[0].unsqueeze(0)
+        ret_valid_ratios = valid_ratios[:,sso_index,:].unsqueeze(1)
+        ret_padding_mask = padding_mask[:, sso_start:sso_end]
+        reference_points = reference_points[:,sso_start:sso_end,:,:]
+        for _, layer in enumerate(self.layers):
+            tgt = layer(output, ret_pos, reference_points, spatial_shapes, level_start_index, padding_mask,tgt)
+            # output[:, sso_start:sso_end,:] = tgt
+        return tgt, ret_spatial_shapes,ret_level_start_index,ret_valid_ratios,ret_pos,ret_padding_mask
+
+
+
+class DeformableTransformerEncoderLayer(nn.Module):
+    def __init__(self,
+                 d_model=256, d_ffn=1024,
+                 dropout=0.1, activation="relu",
+                 n_levels=4, n_heads=8, n_points=4):
+        super().__init__()
+
+        # self attention
+        self.self_attn = MSDeformAttn(d_model, n_levels, n_heads, n_points)
+        self.dropout1 = nn.Dropout(dropout)
+        self.norm1 = nn.LayerNorm(d_model)
+
+        # ffn
+        self.linear1 = nn.Linear(d_model, d_ffn)
+        self.activation = _get_activation_fn(activation)
+        self.dropout2 = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(d_ffn, d_model)
+        self.dropout3 = nn.Dropout(dropout)
+        self.norm2 = nn.LayerNorm(d_model)
+
+    @staticmethod
+    def with_pos_embed(tensor, pos):
+        return tensor if pos is None else tensor + pos
+
+    def forward_ffn(self, src):
+        src2 = self.linear2(self.dropout2(self.activation(self.linear1(src))))
+        src = src + self.dropout3(src2)
+        src = self.norm2(src)
+        return src
+
+    def forward(self, src, pos, reference_points, spatial_shapes, level_start_index, padding_mask=None):
+        # self attention
+        src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index, padding_mask)
+        src = src + self.dropout1(src2)
+        src = self.norm1(src)
+
+        # ffn
+        src = self.forward_ffn(src)
+
+        return src
+
+
+class DeformableTransformerEncoder(nn.Module):
+    def __init__(self, encoder_layer, num_layers):
+        super().__init__()
+        self.layers = _get_clones(encoder_layer, num_layers)
+        self.num_layers = num_layers
+
+    @staticmethod
+    def get_reference_points(spatial_shapes, valid_ratios, device):
+        reference_points_list = []
+        for lvl, (H_, W_) in enumerate(spatial_shapes):
+
+            ref_y, ref_x = torch.meshgrid(torch.linspace(0.5, H_ - 0.5, H_, dtype=torch.float32, device=device),
+                                          torch.linspace(0.5, W_ - 0.5, W_, dtype=torch.float32, device=device))
+            ref_y = ref_y.reshape(-1)[None] / (valid_ratios[:, None, lvl, 1] * H_)
+            ref_x = ref_x.reshape(-1)[None] / (valid_ratios[:, None, lvl, 0] * W_)
+            ref = torch.stack((ref_x, ref_y), -1)
+            reference_points_list.append(ref)
+        reference_points = torch.cat(reference_points_list, 1)
+        reference_points = reference_points[:, :, None] * valid_ratios[:, None]
+        return reference_points
+
+    def forward(self, src, spatial_shapes, level_start_index, valid_ratios, pos=None, padding_mask=None):
+        output = src
+        reference_points = self.get_reference_points(spatial_shapes, valid_ratios, device=src.device)
+        for _, layer in enumerate(self.layers):
+            output = layer(output, pos, reference_points, spatial_shapes, level_start_index, padding_mask)
+
+        return output
 
 
 class DeformableTransformerDecoderLayer(nn.Module):
@@ -356,9 +542,17 @@ def _get_activation_fn(activation):
 
 
 def build_deforamble_transformer_wo_encoder(args):
+    if args.dataset_file == 'coco':
+        num_classes = 90
+    elif args.dataset_file == 'coco_panoptic':
+        num_classes = 250
+    else:
+        num_classes = 20
+    num_classes += 1
     return DeformableTransformer(
         d_model=args.hidden_dim,
         nhead=args.nheads,
+        num_encoder_layers=args.enc_layers,
         num_decoder_layers=args.dec_layers,
         dim_feedforward=args.dim_feedforward,
         dropout=args.dropout,
@@ -369,6 +563,8 @@ def build_deforamble_transformer_wo_encoder(args):
         enc_n_points=args.enc_n_points,
         two_stage=args.two_stage, # transformer neck w/o encoder cannot support original two stage
         two_stage_num_proposals=args.num_queries,
-        args=args)
+        args=args,
+        num_classes= 1 if args.agn_proposal else num_classes,
+        msi_sso_encoder = args.msi_sso_encoder)
 
 

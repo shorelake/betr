@@ -219,6 +219,12 @@ def get_args_parser():
     # * Efficient DETR
     parser.add_argument('--eff_query_init', default=False, action='store_true')
     parser.add_argument('--eff_specific_head', default=False, action='store_true')
+    parser.add_argument('--agn_proposal', default=False, action='store_true')
+
+    ## Neck encoder
+    parser.add_argument('--msi_sso_encoder', default=None, type=str,
+                        help="Name of the msi_sso_encoder to use, now support msi_sso_p4, \
+                              msi_sso_p5, msi_sso_p3") #TODO
     return parser
 
 
