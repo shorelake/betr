@@ -225,6 +225,12 @@ def get_args_parser():
     parser.add_argument('--msi_sso_encoder', default=None, type=str,
                         help="Name of the msi_sso_encoder to use, now support msi_sso_p4, \
                               msi_sso_p5, msi_sso_p3") #TODO
+
+
+    ## proposal net
+    parser.add_argument('--proposal_net', default='default', type=str,
+                        help="Name of the proposal_net to use, now support default, rpn_default, \
+                              fcos, retina") #TODO
     return parser
 
 

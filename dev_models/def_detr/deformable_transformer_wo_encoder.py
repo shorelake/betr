@@ -18,10 +18,11 @@ from torch.nn.init import xavier_uniform_, constant_, uniform_, normal_
 
 from util.misc import inverse_sigmoid
 from models.ops.modules import MSDeformAttn
+from .proposal_network import build_proposal_network, ProposalNet
 from loguru import logger
 
 class DeformableTransformer(nn.Module):
-    def __init__(self, d_model=256, nhead=8,
+    def __init__(self, proposal, d_model=256, nhead=8,
                  num_encoder_layers=6, num_decoder_layers=6, dim_feedforward=1024, dropout=0.1,
                  activation="relu", return_intermediate_dec=False,
                  num_feature_levels=4, dec_n_points=4,  enc_n_points=4,
@@ -71,27 +72,13 @@ class DeformableTransformer(nn.Module):
                     raise ValueError(f'WRONG, --msi_sso_encoder {msi_sso_encoder}, --num_feature_levels {num_feature_levels}')
 
         if two_stage:
-            self.enc_output = nn.Linear(d_model, d_model)
-            self.enc_output_norm = nn.LayerNorm(d_model)
-            self.pos_trans = nn.Linear(d_model * 2, d_model * (1 if self.eff_query_init else 2))
-            self.pos_trans_norm = nn.LayerNorm(d_model * (1 if self.eff_query_init else 2))
+            self.proposal = proposal
         else:
             self.reference_points = nn.Linear(d_model, 2)
 
         self.init_query_from_backbone = args.init_query_from_backbone
 
         self._reset_parameters()
-        if two_stage:
-            self.class_embed = nn.Linear(d_model, num_classes)
-            self.bbox_embed = MLP(d_model, d_model, 4, 3)
-
-            prior_prob = 0.01
-            bias_value = -math.log((1 - prior_prob) / prior_prob)
-            self.class_embed.bias.data = torch.ones(num_classes) * bias_value
-
-            nn.init.constant_(self.bbox_embed.layers[-1].weight.data, 0)
-            nn.init.constant_(self.bbox_embed.layers[-1].bias.data, 0)
-            nn.init.constant_(self.bbox_embed.layers[-1].bias.data[2:], 0.0)
 
     def _reset_parameters(self):
         for p in self.parameters():
@@ -100,66 +87,14 @@ class DeformableTransformer(nn.Module):
         for m in self.modules():
             if isinstance(m, MSDeformAttn):
                 m._reset_parameters()
+            # if isinstance(m, ProposalNet):
+            #     m._reset_parameters()
         if not self.two_stage:
             xavier_uniform_(self.reference_points.weight.data, gain=1.0)
             constant_(self.reference_points.bias.data, 0.)
+        if self.two_stage:
+            self.proposal._reset_parameters()
         normal_(self.level_embed)
-
-        # if self.two_stage:
-        #     prior_prob = 0.01
-        #     bias_value = -math.log((1 - prior_prob) / prior_prob)
-        #     self.class_embed.bias.data = torch.ones(self.num_classes) * bias_value
-
-        #     nn.init.constant_(self.bbox_embed.layers[-1].weight.data, 0)
-        #     nn.init.constant_(self.bbox_embed.layers[-1].bias.data, 0)
-        #     nn.init.constant_(self.bbox_embed.layers[-1].bias.data[2:], 0.0)
-
-    def get_proposal_pos_embed(self, proposals):
-        num_pos_feats = 128
-        temperature = 10000
-        scale = 2 * math.pi
-
-        dim_t = torch.arange(num_pos_feats, dtype=torch.float32, device=proposals.device)
-        dim_t = temperature ** (2 * (dim_t // 2) / num_pos_feats)
-        # N, L, 4
-        proposals = proposals.sigmoid() * scale
-        # N, L, 4, 128
-        pos = proposals[:, :, :, None] / dim_t
-        # N, L, 4, 64, 2
-        pos = torch.stack((pos[:, :, :, 0::2].sin(), pos[:, :, :, 1::2].cos()), dim=4).flatten(2)
-        return pos
-
-    def gen_encoder_output_proposals(self, memory, memory_padding_mask, spatial_shapes):
-        N_, S_, C_ = memory.shape
-        base_scale = 4.0
-        proposals = []
-        _cur = 0
-        for lvl, (H_, W_) in enumerate(spatial_shapes):
-            mask_flatten_ = memory_padding_mask[:, _cur:(_cur + H_ * W_)].view(N_, H_, W_, 1)
-            valid_H = torch.sum(~mask_flatten_[:, :, 0, 0], 1)
-            valid_W = torch.sum(~mask_flatten_[:, 0, :, 0], 1)
-
-            grid_y, grid_x = torch.meshgrid(torch.linspace(0, H_ - 1, H_, dtype=torch.float32, device=memory.device),
-                                            torch.linspace(0, W_ - 1, W_, dtype=torch.float32, device=memory.device))
-            grid = torch.cat([grid_x.unsqueeze(-1), grid_y.unsqueeze(-1)], -1)
-
-            scale = torch.cat([valid_W.unsqueeze(-1), valid_H.unsqueeze(-1)], 1).view(N_, 1, 1, 2)
-            grid = (grid.unsqueeze(0).expand(N_, -1, -1, -1) + 0.5) / scale
-            wh = torch.ones_like(grid) * 0.05 * (2.0 ** lvl)
-            proposal = torch.cat((grid, wh), -1).view(N_, -1, 4)
-            proposals.append(proposal)
-            _cur += (H_ * W_)
-        output_proposals = torch.cat(proposals, 1)
-        output_proposals_valid = ((output_proposals > 0.01) & (output_proposals < 0.99)).all(-1, keepdim=True)
-        output_proposals = torch.log(output_proposals / (1 - output_proposals))
-        output_proposals = output_proposals.masked_fill(memory_padding_mask.unsqueeze(-1), float('inf'))
-        output_proposals = output_proposals.masked_fill(~output_proposals_valid, float('inf'))
-
-        output_memory = memory
-        output_memory = output_memory.masked_fill(memory_padding_mask.unsqueeze(-1), float(0))
-        output_memory = output_memory.masked_fill(~output_proposals_valid, float(0))
-        output_memory = self.enc_output_norm(self.enc_output(output_memory))
-        return output_memory, output_proposals
 
     def get_valid_ratio(self, mask):
         _, H, W = mask.shape
@@ -210,33 +145,9 @@ class DeformableTransformer(nn.Module):
         # prepare input for decoder
         bs, _, c = memory.shape
         if self.two_stage:
-            output_memory, output_proposals = self.gen_encoder_output_proposals(memory, mask_flatten, spatial_shapes)
-            # hack implementation for two-stage Deformable DETR
-            enc_outputs_class = self.class_embed(output_memory)
-            enc_outputs_coord_unact = self.bbox_embed(output_memory) + output_proposals
-
-            topk = self.two_stage_num_proposals
-            if self.eff_specific_head:
-                # take the best score for judging objectness with class specific head
-                enc_outputs_fg_class = enc_outputs_class.topk(1, dim=2).values[... , 0]
-            else:
-                # take the score from the binary(fore/background) classfier 
-                # though outputs have 91 output dim, the 1st dim. alone will be used for the loss computation.
-                enc_outputs_fg_class = enc_outputs_class[..., 0]
-
-            topk_proposals = torch.topk(enc_outputs_fg_class, topk, dim=1)[1]
-            topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
-            topk_coords_unact = topk_coords_unact.detach()
-            reference_points = topk_coords_unact.sigmoid()
+            enc_outputs_class, enc_outputs_coord_unact, reference_points, query_embed, tgt = \
+                self.proposal(memory,mask_flatten,spatial_shapes,level_start_index,valid_ratios)
             init_reference_out = reference_points
-            pos_trans_out = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords_unact)))
-
-            if self.eff_query_init:
-                # Efficient-DETR uses top-k memory as the initialization of `tgt` (query vectors)
-                tgt = torch.gather(memory, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, memory.size(-1)))
-                query_embed = pos_trans_out
-            else:
-                query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
         else:
             if not self.init_query_from_backbone:
                 query_embed, tgt = torch.split(query_embed, c, dim=1)
@@ -549,7 +460,13 @@ def build_deforamble_transformer_wo_encoder(args):
     else:
         num_classes = 20
     num_classes += 1
+    if args.two_stage:
+        logger.info(f'build proposal network')
+        proposal = build_proposal_network(args)
+    else:
+        proposal = None
     return DeformableTransformer(
+        proposal,
         d_model=args.hidden_dim,
         nhead=args.nheads,
         num_encoder_layers=args.enc_layers,
