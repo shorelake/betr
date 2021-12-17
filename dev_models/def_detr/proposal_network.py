@@ -449,7 +449,7 @@ class RetinaProposalNet(nn.Module):
 
             # class_logits = class_logits.masked_fill(mask_flatten_.flatten(1).unsqueeze(-1), float('-inf'))
             # class_logits = class_logits.masked_fill(~proposal_valid, float('-inf'))
-            
+
             # pred_offset = pred_offset.masked_fill(mask_flatten_.flatten(1).unsqueeze(-1), float('inf'))
             # pred_offset = pred_offset.masked_fill(~proposal_valid, float('inf'))
             pred_unact_coord = pred_offset + proposal
@@ -596,8 +596,8 @@ class FcosProposalNet(nn.Module):
             class_logits = class_logits.permute(0,2,3,1).reshape(N_,-1,self.num_classes) # N HW C
             pred_offset = pred_offset.permute(0,2,3,1).reshape(N_,-1,4) # N HW 4
 
-            class_logits = class_logits.masked_fill(mask_flatten_.flatten(1).unsqueeze(-1), float('-inf'))
-            class_logits = class_logits.masked_fill(~locations_valid, float('-inf'))
+            # class_logits = class_logits.masked_fill(mask_flatten_.flatten(1).unsqueeze(-1), float('-inf'))
+            # class_logits = class_logits.masked_fill(~locations_valid, float('-inf'))
             pred_offset = pred_offset.masked_fill(mask_flatten_.flatten(1).unsqueeze(-1), float('inf'))
             pred_offset = pred_offset.masked_fill(~locations_valid, float('inf'))
             # import pdb;pdb.set_trace()
