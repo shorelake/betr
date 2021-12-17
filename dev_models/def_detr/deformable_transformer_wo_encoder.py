@@ -18,7 +18,7 @@ from torch.nn.init import xavier_uniform_, constant_, uniform_, normal_
 
 from util.misc import inverse_sigmoid
 from models.ops.modules import MSDeformAttn
-from .proposal_network import build_proposal_network, ProposalNet
+from .proposal_network import build_proposal_network
 from loguru import logger
 
 class DeformableTransformer(nn.Module):
