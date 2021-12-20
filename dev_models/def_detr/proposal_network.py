@@ -220,7 +220,9 @@ class RpnDefaultProposalNet(nn.Module):
         N_, S_, C_ = memory.shape
         base_scale = 4.0
         proposals = []
-        memorys = []
+        output_memory = []
+        outputs_coord_unact = []
+        outputs_class = []
         _cur = 0
         for lvl, (H_, W_) in enumerate(spatial_shapes):
             mask_flatten_ = memory_padding_mask[:, _cur:(_cur + H_ * W_)].view(N_, H_, W_, 1)
@@ -235,25 +237,22 @@ class RpnDefaultProposalNet(nn.Module):
             grid = (grid.unsqueeze(0).expand(N_, -1, -1, -1) + 0.5) / scale
             wh = torch.ones_like(grid) * 0.05 * (2.0 ** lvl)
             proposal = torch.cat((grid, wh), -1).view(N_, -1, 4)
-
-            proposal_valid = ((proposal > 0.01) & (proposal < 0.99)).all(-1, keepdim=True)
-
-            proposal = torch.log(proposal / (1 - proposal)) # inverse sigmoid
-            proposal = proposal.masked_fill(mask_flatten_.flatten(1).unsqueeze(-1), float('inf'))
-            proposal = proposal.masked_fill(~proposal_valid, float('inf'))
             proposals.append(proposal)
             memory_lvl = memory[:, _cur:(_cur + H_ * W_), :]#.view(N_,H_,W_,C_).permute(0,3,1,2) # N C H W
-            memory_lvl = memory_lvl.masked_fill(mask_flatten_.flatten(1).unsqueeze(-1), float(0))
-            memory_lvl = memory_lvl.masked_fill(~proposal_valid, float(0))
+
             memory_lvl = memory_lvl.view(N_,H_,W_,C_).permute(0,3,1,2) # N C H W
             memory_lvl = self.rpn_tower(memory_lvl) # N C H W
-            memorys.append(memory_lvl.flatten(2).permute(0,2,1))
-            # memory[:, _cur:(_cur + H_ * W_), :] = memory_lvl.flatten(2).permute(0,2,1)
+
+            output_memory.append(memory_lvl.flatten(2).permute(0,2,1))
+
             _cur += (H_ * W_)
 
         output_proposals = torch.cat(proposals, 1)
-        output_memory = torch.cat(memorys,1)
-        # output_memory = self.enc_output_norm(self.enc_output(output_memory))
+        output_proposals_valid = ((output_proposals > 0.01) & (output_proposals < 0.99)).all(-1, keepdim=True)
+        output_proposals = torch.log(output_proposals / (1 - output_proposals)) # inverse sigmoid
+        output_proposals = output_proposals.masked_fill(memory_padding_mask.unsqueeze(-1), float('inf'))
+        output_proposals = output_proposals.masked_fill(~output_proposals_valid, float('inf'))
+        output_memory = torch.cat(output_memory,1)
         return output_memory, output_proposals
 
     def forward(self, memory, mask_flatten, spatial_shapes,level_start_index,valid_ratios):
