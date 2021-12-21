@@ -280,7 +280,7 @@ class RpnDefaultProposalNet(nn.Module):
 
         if self.eff_query_init:
             # Efficient-DETR uses top-k memory as the initialization of `tgt` (query vectors)
-            tgt = torch.gather(memory, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, memory.size(-1)))
+            tgt = torch.gather(output_memory, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, output_memory.size(-1)))
             query_embed = pos_trans_out
         else:
             query_embed, tgt = torch.split(pos_trans_out, c, dim=2)

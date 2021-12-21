@@ -359,14 +359,14 @@ class DeformableTransformerDecoderLayer(nn.Module):
         # self attention
         q = k = self.with_pos_embed(tgt, query_pos)
         tgt2 = self.self_attn(q.transpose(0, 1), k.transpose(0, 1), tgt.transpose(0, 1))[0].transpose(0, 1)
-        tgt = tgt + self.dropout2(tgt2)
-        tgt = self.norm2(tgt)
+        tgt2 = tgt + self.dropout2(tgt2)
+        tgt2 = self.norm2(tgt2)
 
         # cross attention
-        tgt2 = self.cross_attn(self.with_pos_embed(tgt, query_pos),
+        tgt3 = self.cross_attn(tgt,
                                reference_points,
                                src, src_spatial_shapes, level_start_index, src_padding_mask)
-        tgt = tgt + self.dropout1(tgt2)
+        tgt = tgt2 + self.dropout1(tgt3)
         tgt = self.norm1(tgt)
 
         # ffn
