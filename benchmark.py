@@ -18,7 +18,7 @@ from main import get_args_parser as get_main_args_parser
 from models import build_model
 from datasets import build_dataset
 from util.misc import nested_tensor_from_tensor_list
-
+from loguru import logger
 torch.autograd.set_grad_enabled(False)
 
 def get_benckmark_arg_parser():
@@ -64,6 +64,11 @@ def benchmark():
         print("no cuda")
         sys.exit(1)
     print(torch.cuda.get_device_name(torch.cuda.current_device()))
+
+    # model_without_ddp = model
+    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info(f'number of params:{n_parameters}')
+
     model.cuda()
     model.eval()
     if args.resume is not None:
