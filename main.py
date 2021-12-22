@@ -231,6 +231,9 @@ def get_args_parser():
     parser.add_argument('--proposal_net', default='default', type=str,
                         help="Name of the proposal_net to use, now support default, rpn_default, \
                               fcos, retina") #TODO
+
+    ## TSP net dec with only selfattn
+    parser.add_argument('--only_selfattn_dec', default=False, action='store_true')
     return parser
 
 

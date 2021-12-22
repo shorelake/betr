@@ -29,7 +29,8 @@ class DeformableTransformer(nn.Module):
                  two_stage=False, two_stage_num_proposals=300,
                  args=None, num_classes=91,
                  # msi_sso_encoder param
-                 msi_sso_encoder=None):
+                 msi_sso_encoder=None,
+                 only_selfattn_dec=False):
         super().__init__()
         self.num_classes = num_classes
         self.d_model = d_model
@@ -45,8 +46,8 @@ class DeformableTransformer(nn.Module):
         self.encoder = DeformableTransformerEncoder(encoder_layer, num_encoder_layers) if num_encoder_layers !=0 else None
         decoder_layer = DeformableTransformerDecoderLayer(d_model, dim_feedforward,
                                                           dropout, activation,
-                                                          num_feature_levels, nhead, dec_n_points)
-        self.decoder = DeformableTransformerDecoder(decoder_layer, num_decoder_layers, return_intermediate_dec)
+                                                          num_feature_levels, nhead, dec_n_points, only_selfattn_dec)
+        self.decoder = DeformableTransformerDecoder(decoder_layer, num_decoder_layers, return_intermediate_dec) if num_decoder_layers !=0 else None
 
         self.level_embed = nn.Parameter(torch.Tensor(num_feature_levels, d_model))
 
@@ -159,10 +160,15 @@ class DeformableTransformer(nn.Module):
             reference_points = self.reference_points(query_embed).sigmoid()
             init_reference_out = reference_points
         # decoder
-        hs, inter_references = self.decoder(tgt, reference_points, memory,
-                                            spatial_shapes, level_start_index, valid_ratios, query_embed, mask_flatten)
+        if self.decoder is not None:
+            hs, inter_references = self.decoder(tgt, reference_points, memory,
+                                                spatial_shapes, level_start_index, valid_ratios, query_embed, mask_flatten)
 
-        inter_references_out = inter_references
+            inter_references_out = inter_references
+        else:
+            hs = None
+            inter_references_out = None
+
         if self.two_stage:
             return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact
         return hs, init_reference_out, inter_references_out, None, None
@@ -324,13 +330,15 @@ class DeformableTransformerEncoder(nn.Module):
 class DeformableTransformerDecoderLayer(nn.Module):
     def __init__(self, d_model=256, d_ffn=1024,
                  dropout=0.1, activation="relu",
-                 n_levels=4, n_heads=8, n_points=4):
+                 n_levels=4, n_heads=8, n_points=4,
+                 only_selfattn_dec=False):
         super().__init__()
-
-        # cross attention
-        self.cross_attn = MSDeformAttn(d_model, n_levels, n_heads, n_points)
-        self.dropout1 = nn.Dropout(dropout)
-        self.norm1 = nn.LayerNorm(d_model)
+        self.only_selfattn_dec = only_selfattn_dec
+        if not only_selfattn_dec:
+            # cross attention
+            self.cross_attn = MSDeformAttn(d_model, n_levels, n_heads, n_points)
+            self.dropout1 = nn.Dropout(dropout)
+            self.norm1 = nn.LayerNorm(d_model)
 
         # self attention
         self.self_attn = nn.MultiheadAttention(d_model, n_heads, dropout=dropout)
@@ -378,13 +386,13 @@ class DeformableTransformerDecoderLayer(nn.Module):
         tgt2 = self.self_attn(q.transpose(0, 1), k.transpose(0, 1), tgt.transpose(0, 1))[0].transpose(0, 1)
         tgt = tgt + self.dropout2(tgt2)
         tgt = self.norm2(tgt)
-
-        # cross attention
-        tgt2 = self.cross_attn(self.with_pos_embed(tgt, query_pos),
-                               reference_points,
-                               src, src_spatial_shapes, level_start_index, src_padding_mask)
-        tgt = tgt + self.dropout1(tgt2)
-        tgt = self.norm1(tgt)
+        if not self.only_selfattn_dec:
+            # cross attention
+            tgt2 = self.cross_attn(self.with_pos_embed(tgt, query_pos),
+                                reference_points,
+                                src, src_spatial_shapes, level_start_index, src_padding_mask)
+            tgt = tgt + self.dropout1(tgt2)
+            tgt = self.norm1(tgt)
 
         # ffn
         tgt = self.forward_ffn(tgt)
@@ -499,6 +507,7 @@ def build_deforamble_transformer_wo_encoder(args):
         two_stage_num_proposals=args.num_queries,
         args=args,
         num_classes= 1 if args.agn_proposal else num_classes,
-        msi_sso_encoder = args.msi_sso_encoder)
+        msi_sso_encoder=args.msi_sso_encoder,
+        only_selfattn_dec=args.only_selfattn_dec)
 
 
