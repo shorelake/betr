@@ -28,6 +28,8 @@ from dev_models.segmentation import (DETRsegm, PostProcessPanoptic, PostProcessS
 from .deformable_transformer import build_deforamble_transformer
 from .deformable_transformer_wo_encoder import build_deforamble_transformer_wo_encoder
 import copy
+from models.cnn_necks import build_cnn_encoder
+from models import cnn_necks
 
 from loguru import logger
 
@@ -38,7 +40,7 @@ def _get_clones(module, N):
 class DeformableDETR(nn.Module):
     """ This is the Deformable DETR module that performs object detection """
     def __init__(self, backbone, transformer, num_classes, num_queries, num_feature_levels,
-                 aux_loss=True, with_box_refine=False, two_stage=False, args=None):
+                 aux_loss=True, with_box_refine=False, two_stage=False, args=None, cnn_neck=None):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -60,17 +62,25 @@ class DeformableDETR(nn.Module):
         self.class_embed = nn.Linear(hidden_dim, num_classes)
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
         self.num_feature_levels = num_feature_levels
+        self.cnn_encoder = None
         if not two_stage and not args.init_query_from_backbone:
             self.query_embed = nn.Embedding(num_queries, hidden_dim*2)
         if num_feature_levels > 1:
             num_backbone_outs = len(backbone.strides)
             input_proj_list = []
-            for _ in range(num_backbone_outs):
-                in_channels = backbone.num_channels[_]
-                input_proj_list.append(nn.Sequential(
-                    nn.Conv2d(in_channels, hidden_dim, kernel_size=1),
-                    nn.GroupNorm(32, hidden_dim),
-                ))
+            if cnn_neck is None:
+                for _ in range(num_backbone_outs):
+                    in_channels = backbone.num_channels[_]
+                    input_proj_list.append(nn.Sequential(
+                        nn.Conv2d(in_channels, hidden_dim, kernel_size=1),
+                        nn.GroupNorm(32, hidden_dim),
+                    ))
+            else:
+                in_channels_list = []
+                for _ in range(num_backbone_outs):
+                    in_channels = backbone.num_channels[_]
+                    in_channels_list.append(in_channels)
+                self.cnn_encoder = build_cnn_encoder(cnn_neck, num_backbone_outs, in_channels_list, hidden_dim)
             for _ in range(num_feature_levels - num_backbone_outs):
                 input_proj_list.append(nn.Sequential(
                     nn.Conv2d(in_channels, hidden_dim, kernel_size=3, stride=2, padding=1),
@@ -144,28 +154,51 @@ class DeformableDETR(nn.Module):
             features, pos = self.backbone(samples)
         else:
             features, pos, det_tokens, det_pos = self.backbone(samples)
-
-        srcs = []
-        masks = []
-        for l, feat in enumerate(features):
-            src, mask = feat.decompose()
-            srcs.append(self.input_proj[l](src))
-            masks.append(mask)
-            assert mask is not None
-        if self.num_feature_levels > len(srcs):
-            _len_srcs = len(srcs)
-            for l in range(_len_srcs, self.num_feature_levels):
-                if l == _len_srcs:
-                    src = self.input_proj[l](features[-1].tensors)
-                else:
-                    src = self.input_proj[l](srcs[-1])
-                m = samples.mask
-                mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
-                pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)
+        if self.cnn_encoder is None:
+            srcs = []
+            masks = []
+            for l, feat in enumerate(features):
+                src, mask = feat.decompose()
+                srcs.append(self.input_proj[l](src))
+                masks.append(mask)
+                assert mask is not None
+            if self.num_feature_levels > len(srcs):
+                _len_srcs = len(srcs)
+                for l in range(_len_srcs, self.num_feature_levels):
+                    if l == _len_srcs:
+                        src = self.input_proj[l](features[-1].tensors)
+                    else:
+                        src = self.input_proj[l](srcs[-1])
+                    m = samples.mask
+                    mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
+                    pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)
+                    srcs.append(src)
+                    masks.append(mask)
+                    pos.append(pos_l)
+        else:
+            srcs = []
+            masks = []
+            for l, feat in enumerate(features):
+                src, mask = feat.decompose()
                 srcs.append(src)
                 masks.append(mask)
-                pos.append(pos_l)
-
+                assert mask is not None
+            srcs = self.cnn_encoder(srcs)
+            if self.num_feature_levels > len(srcs):
+                _len_srcs = len(srcs)
+                input_proj_index = 0
+                for l in range(_len_srcs, self.num_feature_levels):
+                    if l == _len_srcs:
+                        src = self.input_proj[input_proj_index](features[-1].tensors)
+                    else:
+                        src = self.input_proj[input_proj_index](srcs[-1])
+                    m = samples.mask
+                    mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
+                    pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)
+                    srcs.append(src)
+                    masks.append(mask)
+                    pos.append(pos_l)
+                    input_proj_index = input_proj_index + 1
         query_embeds = None
         if not self.two_stage and not self.init_query_from_backbone:
             query_embeds = self.query_embed.weight
@@ -496,6 +529,12 @@ def build(args):
             raise ValueError(f'not support with encoder for init_query_from_backbone {args.init_query_from_backbone} or vit backbone {args.vit_backbone}')
         logger.info(f"build tranformer neck with {args.enc_layers} encoder")
         transformer = build_deforamble_transformer_wo_encoder(args)
+
+    neck_encoder = args.neck_encoder
+    if not neck_encoder in cnn_necks.__all__:
+        logger.warning(f'neck_encoder is {neck_encoder}, NOT using CNN necks')
+        neck_encoder = None
+    logger.info(f'building cnn neck encoder {neck_encoder}')
     model = DeformableDETR(
         backbone,
         transformer,
@@ -506,6 +545,7 @@ def build(args):
         with_box_refine=args.with_box_refine,
         two_stage=args.two_stage,
         args=args,
+        cnn_neck=neck_encoder,
     )
     if args.masks:
         model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))
