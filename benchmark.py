@@ -81,5 +81,5 @@ def benchmark():
 
 if __name__ == '__main__':
     fps = benchmark()
-    print(f'Inference Speed: {fps:.1f} FPS')
+    print(f'Inference Speed: {fps:.1f} FPS, {1000/fps:.1f} ms/img')
 

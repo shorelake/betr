@@ -55,7 +55,8 @@ class BufferList(nn.Module):
 
 class DefaultProposalNet(nn.Module):
     def __init__(self, d_model=256, num_classes=91, num_proposals=300, 
-                 eff_query_init=False, eff_specific_head=False):
+                 eff_query_init=False, eff_specific_head=False,
+                 has_dec=True):
         super().__init__()
         self.num_classes = num_classes
         self.num_proposals = num_proposals
@@ -70,6 +71,7 @@ class DefaultProposalNet(nn.Module):
         self.class_embed = nn.Linear(d_model, num_classes)
         self.bbox_embed = MLP(d_model, d_model, 4, 3)
         
+        self.has_dec = has_dec
     def _reset_parameters(self):
         for p in self.parameters():
             if p.dim() > 1:
@@ -135,35 +137,39 @@ class DefaultProposalNet(nn.Module):
         # hack implementation for two-stage Deformable DETR
         enc_outputs_class = self.class_embed(output_memory)
         enc_outputs_coord_unact = self.bbox_embed(output_memory) + output_proposals
+        if self.has_dec:
+            topk = self.num_proposals
+            if self.eff_specific_head:
+                # take the best score for judging objectness with class specific head
+                enc_outputs_fg_class = enc_outputs_class.topk(1, dim=2).values[... , 0]
+            else:
+                # take the score from the binary(fore/background) classfier 
+                # though outputs have 91 output dim, the 1st dim. alone will be used for the loss computation.
+                enc_outputs_fg_class = enc_outputs_class[..., 0]
 
-        topk = self.num_proposals
-        if self.eff_specific_head:
-            # take the best score for judging objectness with class specific head
-            enc_outputs_fg_class = enc_outputs_class.topk(1, dim=2).values[... , 0]
+            topk_proposals = torch.topk(enc_outputs_fg_class, topk, dim=1)[1]
+            topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
+            topk_coords_unact = topk_coords_unact.detach()
+            reference_points = topk_coords_unact.sigmoid()
+            init_reference_out = reference_points
+            pos_trans_out = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords_unact)))
+
+            if self.eff_query_init:
+                # Efficient-DETR uses top-k memory as the initialization of `tgt` (query vectors)
+                tgt = torch.gather(memory, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, memory.size(-1)))
+                query_embed = pos_trans_out
+            else:
+                query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
+            return enc_outputs_class, enc_outputs_coord_unact, reference_points, query_embed, tgt
         else:
-            # take the score from the binary(fore/background) classfier 
-            # though outputs have 91 output dim, the 1st dim. alone will be used for the loss computation.
-            enc_outputs_fg_class = enc_outputs_class[..., 0]
-
-        topk_proposals = torch.topk(enc_outputs_fg_class, topk, dim=1)[1]
-        topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
-        topk_coords_unact = topk_coords_unact.detach()
-        reference_points = topk_coords_unact.sigmoid()
-        init_reference_out = reference_points
-        pos_trans_out = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords_unact)))
-
-        if self.eff_query_init:
-            # Efficient-DETR uses top-k memory as the initialization of `tgt` (query vectors)
-            tgt = torch.gather(memory, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, memory.size(-1)))
-            query_embed = pos_trans_out
-        else:
-            query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
-        return enc_outputs_class, enc_outputs_coord_unact, reference_points, query_embed, tgt
+            return enc_outputs_class, enc_outputs_coord_unact, None, None, None
 
 class RpnDefaultProposalNet(nn.Module):
     def __init__(self, d_model=256, num_classes=91, num_proposals=300, 
-                 eff_query_init=False, eff_specific_head=False):
+                 eff_query_init=False, eff_specific_head=False,
+                 has_dec=True):
         super().__init__()
+        self.has_dec=has_dec
         self.num_classes = num_classes
         self.num_proposals = num_proposals
         self.eff_query_init = eff_query_init
@@ -261,39 +267,43 @@ class RpnDefaultProposalNet(nn.Module):
         # hack implementation for two-stage Deformable DETR
         enc_outputs_class = self.class_embed(output_memory)
         enc_outputs_coord_unact = self.bbox_embed(output_memory) + output_proposals
+        if self.has_dec:
+            topk = self.num_proposals
+            if self.eff_specific_head:
+                # take the best score for judging objectness with class specific head
+                enc_outputs_fg_class = enc_outputs_class.topk(1, dim=2).values[... , 0]
+            else:
+                # take the score from the binary(fore/background) classfier 
+                # though outputs have 91 output dim, the 1st dim. alone will be used for the loss computation.
+                enc_outputs_fg_class = enc_outputs_class[..., 0]
 
-        topk = self.num_proposals
-        if self.eff_specific_head:
-            # take the best score for judging objectness with class specific head
-            enc_outputs_fg_class = enc_outputs_class.topk(1, dim=2).values[... , 0]
+            topk_proposals = torch.topk(enc_outputs_fg_class, topk, dim=1)[1]
+            topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
+            topk_coords_unact = topk_coords_unact.detach()
+            reference_points = topk_coords_unact.sigmoid()
+            init_reference_out = reference_points
+            pos_trans_out = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords_unact)))
+
+            if self.eff_query_init:
+                # Efficient-DETR uses top-k memory as the initialization of `tgt` (query vectors)
+                tgt = torch.gather(output_memory, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, output_memory.size(-1)))
+                query_embed = pos_trans_out
+            else:
+                query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
+            return enc_outputs_class, enc_outputs_coord_unact, reference_points, query_embed, tgt
         else:
-            # take the score from the binary(fore/background) classfier 
-            # though outputs have 91 output dim, the 1st dim. alone will be used for the loss computation.
-            enc_outputs_fg_class = enc_outputs_class[..., 0]
-
-        topk_proposals = torch.topk(enc_outputs_fg_class, topk, dim=1)[1]
-        topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
-        topk_coords_unact = topk_coords_unact.detach()
-        reference_points = topk_coords_unact.sigmoid()
-        init_reference_out = reference_points
-        pos_trans_out = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords_unact)))
-
-        if self.eff_query_init:
-            # Efficient-DETR uses top-k memory as the initialization of `tgt` (query vectors)
-            tgt = torch.gather(output_memory, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, output_memory.size(-1)))
-            query_embed = pos_trans_out
-        else:
-            query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
-        return enc_outputs_class, enc_outputs_coord_unact, reference_points, query_embed, tgt
+            return enc_outputs_class, enc_outputs_coord_unact, None,None,None
 
 
 class RetinaProposalNet(nn.Module):
     def __init__(self, d_model=256, num_classes=91, num_proposals=300,
                  eff_query_init=False, eff_specific_head=False,
+                 has_dec=True,
                  num_feature_levels=4, strides = [8, 16, 32, 64],
                  # anchor param
                  ):
         super().__init__()
+        self.has_dec = has_dec
         self.num_classes = num_classes
         self.num_proposals = num_proposals
         self.eff_query_init = eff_query_init
@@ -466,40 +476,44 @@ class RetinaProposalNet(nn.Module):
     def forward(self, memory, mask_flatten, spatial_shapes,level_start_index,valid_ratios):
         bs, _, c = memory.shape
         enc_outputs_class, enc_outputs_coord_unact = self.gen_encoder_output_proposals(memory, mask_flatten, spatial_shapes)
+        if self.has_dec:
+            topk = self.num_proposals
+            if self.eff_specific_head:
+                # take the best score for judging objectness with class specific head
+                enc_outputs_fg_class = enc_outputs_class.topk(1, dim=2).values[... , 0]
+            else:
+                # take the score from the binary(fore/background) classfier 
+                # though outputs have 91 output dim, the 1st dim. alone will be used for the loss computation.
+                enc_outputs_fg_class = enc_outputs_class[..., 0]
 
-        topk = self.num_proposals
-        if self.eff_specific_head:
-            # take the best score for judging objectness with class specific head
-            enc_outputs_fg_class = enc_outputs_class.topk(1, dim=2).values[... , 0]
+            topk_proposals = torch.topk(enc_outputs_fg_class, topk, dim=1)[1]
+            topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
+            topk_coords_unact = topk_coords_unact.detach()
+            reference_points = topk_coords_unact.sigmoid()
+            init_reference_out = reference_points
+            pos_trans_out = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords_unact)))
+
+            if self.eff_query_init:
+                # Efficient-DETR uses top-k memory as the initialization of `tgt` (query vectors)
+                # import pdb;pdb.set_trace() # TODO back to resolution
+                memory_topk = topk_proposals // self.num_anchors
+                tgt = torch.gather(memory, 1, memory_topk.unsqueeze(-1).repeat(1, 1, memory.size(-1)))
+                query_embed = pos_trans_out
+            else:
+                query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
+            return enc_outputs_class, enc_outputs_coord_unact, reference_points, query_embed, tgt
         else:
-            # take the score from the binary(fore/background) classfier 
-            # though outputs have 91 output dim, the 1st dim. alone will be used for the loss computation.
-            enc_outputs_fg_class = enc_outputs_class[..., 0]
-
-        topk_proposals = torch.topk(enc_outputs_fg_class, topk, dim=1)[1]
-        topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
-        topk_coords_unact = topk_coords_unact.detach()
-        reference_points = topk_coords_unact.sigmoid()
-        init_reference_out = reference_points
-        pos_trans_out = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords_unact)))
-
-        if self.eff_query_init:
-            # Efficient-DETR uses top-k memory as the initialization of `tgt` (query vectors)
-            # import pdb;pdb.set_trace() # TODO back to resolution
-            memory_topk = topk_proposals // self.num_anchors
-            tgt = torch.gather(memory, 1, memory_topk.unsqueeze(-1).repeat(1, 1, memory.size(-1)))
-            query_embed = pos_trans_out
-        else:
-            query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
-        return enc_outputs_class, enc_outputs_coord_unact, reference_points, query_embed, tgt
+            return enc_outputs_class, enc_outputs_coord_unact, None, None, None
 
 class FcosProposalNet(nn.Module):
     def __init__(self, d_model=256, num_classes=91, num_proposals=300,
                  eff_query_init=False, eff_specific_head=False,
+                 has_dec=True,
                  num_feature_levels=4, strides = [8, 16, 32, 64],
                  # anchor param
                  ):
         super().__init__()
+        self.has_dec=has_dec
         self.num_classes = num_classes
         self.num_proposals = num_proposals
         self.eff_query_init = eff_query_init
@@ -616,31 +630,33 @@ class FcosProposalNet(nn.Module):
     def forward(self, memory, mask_flatten, spatial_shapes,level_start_index,valid_ratios):
         bs, _, c = memory.shape
         enc_outputs_class, enc_outputs_coord_unact = self.gen_encoder_output_proposals(memory, mask_flatten, spatial_shapes)
+        if self.has_dec:
+            topk = self.num_proposals
+            if self.eff_specific_head:
+                # take the best score for judging objectness with class specific head
+                enc_outputs_fg_class = enc_outputs_class.topk(1, dim=2).values[... , 0]
+            else:
+                # take the score from the binary(fore/background) classfier 
+                # though outputs have 91 output dim, the 1st dim. alone will be used for the loss computation.
+                enc_outputs_fg_class = enc_outputs_class[..., 0]
 
-        topk = self.num_proposals
-        if self.eff_specific_head:
-            # take the best score for judging objectness with class specific head
-            enc_outputs_fg_class = enc_outputs_class.topk(1, dim=2).values[... , 0]
+            topk_proposals = torch.topk(enc_outputs_fg_class, topk, dim=1)[1]
+            topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
+            topk_coords_unact = topk_coords_unact.detach()
+            reference_points = topk_coords_unact.sigmoid()
+            init_reference_out = reference_points
+            pos_trans_out = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords_unact)))
+
+            if self.eff_query_init:
+                # Efficient-DETR uses top-k memory as the initialization of `tgt` (query vectors)
+                memory_topk = topk_proposals
+                tgt = torch.gather(memory, 1, memory_topk.unsqueeze(-1).repeat(1, 1, memory.size(-1)))
+                query_embed = pos_trans_out
+            else:
+                query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
+            return enc_outputs_class, enc_outputs_coord_unact, reference_points, query_embed, tgt
         else:
-            # take the score from the binary(fore/background) classfier 
-            # though outputs have 91 output dim, the 1st dim. alone will be used for the loss computation.
-            enc_outputs_fg_class = enc_outputs_class[..., 0]
-
-        topk_proposals = torch.topk(enc_outputs_fg_class, topk, dim=1)[1]
-        topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
-        topk_coords_unact = topk_coords_unact.detach()
-        reference_points = topk_coords_unact.sigmoid()
-        init_reference_out = reference_points
-        pos_trans_out = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords_unact)))
-
-        if self.eff_query_init:
-            # Efficient-DETR uses top-k memory as the initialization of `tgt` (query vectors)
-            memory_topk = topk_proposals
-            tgt = torch.gather(memory, 1, memory_topk.unsqueeze(-1).repeat(1, 1, memory.size(-1)))
-            query_embed = pos_trans_out
-        else:
-            query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
-        return enc_outputs_class, enc_outputs_coord_unact, reference_points, query_embed, tgt
+            return enc_outputs_class, enc_outputs_coord_unact, None, None, None
 
 class MLP(nn.Module):
     """ Very simple multi-layer perceptron (also called FFN)"""
@@ -665,6 +681,7 @@ def build_proposal_network(args):
     else:
         num_classes = 20
     num_classes += 1
+    has_dec = False if args.dec_layers == 0 else True
     if args.proposal_net == 'default':
         logger.info(f'build default proposal net')
         return DefaultProposalNet(
@@ -672,7 +689,8 @@ def build_proposal_network(args):
             num_classes= 1 if args.agn_proposal else num_classes,
             num_proposals=args.num_queries,
             eff_query_init=args.eff_query_init,
-            eff_specific_head=args.eff_specific_head
+            eff_specific_head=args.eff_specific_head,
+            has_dec=has_dec
         )
     elif args.proposal_net == 'rpn_default':
         logger.info(f'build rpn default proposal net')
@@ -681,7 +699,8 @@ def build_proposal_network(args):
             num_classes= 1 if args.agn_proposal else num_classes,
             num_proposals=args.num_queries,
             eff_query_init=args.eff_query_init,
-            eff_specific_head=args.eff_specific_head
+            eff_specific_head=args.eff_specific_head,
+            has_dec=has_dec
         )
     elif args.proposal_net == 'rpn':
         logger.error(f'build rpn default proposal net, not IMPLEMENT YET!')
@@ -691,7 +710,8 @@ def build_proposal_network(args):
             num_classes= 1 if args.agn_proposal else num_classes,
             num_proposals=args.num_queries,
             eff_query_init=args.eff_query_init,
-            eff_specific_head=args.eff_specific_head
+            eff_specific_head=args.eff_specific_head,
+            has_dec=has_dec
         )
     elif args.proposal_net == 'fcos':
         # TODO
@@ -701,7 +721,8 @@ def build_proposal_network(args):
             num_classes= 1 if args.agn_proposal else num_classes,
             num_proposals=args.num_queries,
             eff_query_init=args.eff_query_init,
-            eff_specific_head=args.eff_specific_head
+            eff_specific_head=args.eff_specific_head,
+            has_dec=has_dec
         )
     elif args.proposal_net == 'retina':
         # TODO
@@ -712,5 +733,6 @@ def build_proposal_network(args):
             num_classes= 1 if args.agn_proposal else num_classes,
             num_proposals=args.num_queries,
             eff_query_init=args.eff_query_init,
-            eff_specific_head=args.eff_specific_head
+            eff_specific_head=args.eff_specific_head,
+            has_dec=has_dec
         )
