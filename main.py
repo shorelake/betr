@@ -234,6 +234,12 @@ def get_args_parser():
 
     ## TSP net dec with only selfattn
     parser.add_argument('--only_selfattn_dec', default=False, action='store_true')
+
+    ## Neck decoder
+    parser.add_argument('--neck_decoder', default='def_decoder', type=str,
+                        help="Name of the neck_decoder to use, now support def_decoder default, cond_decoder") #TODO
+    parser.add_argument('--topk_kv', default=False, action='store_true',
+                        help="only support in cond_decoder to prune kv")            
     return parser
 
 

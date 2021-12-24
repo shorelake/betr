@@ -366,6 +366,7 @@ class TransformerDecoder(nn.Module):
                 memory_key_padding_mask: Optional[Tensor] = None,
                 pos: Optional[Tensor] = None,
                 query_pos: Optional[Tensor] = None):
+        import pdb;pdb.set_trace()
         output = tgt
 
         intermediate = []

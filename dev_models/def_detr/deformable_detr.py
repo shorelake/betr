@@ -523,7 +523,7 @@ def build(args):
     logger.info(f"building vit backbone {args.vit_backbone}")
     # backbone = build_swin_backbone(args)
     backbone = build_backbone(args)
-    logger.info(f"build tranformer with {args.dec_layers} decoder")
+    logger.info(f"build tranformer with {args.dec_layers} {args.neck_decoder}")
     if args.enc_layers == 0:
         if args.cross_update:
             logger.info("build tranformer neck without encoder, but decoder query & memory cross update")

@@ -1,0 +1,1 @@
+python main.py --num_feature_levels 4 --output_dir exps/test/ --dim_feedforward 2048  --detector default_conditional_detr --batch_size 2 --lr 1e-4 --lr_backbone 1e-5  --enc_layers 0  --vit_backbone swin_nano --pretrained_path ./pretrained_model/swin_nano_patch4_window7_224.pth

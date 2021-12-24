@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+
+set -x
+
+EXP_DIR=exps/swin_nano_deformable_detr_wo_encoder_cosine_twostage_eff_proposal
+PY_ARGS=${@:1}
+# use PY_ARGS set vit --pretrained_path, --batch_size
+python -u main.py \
+    --output_dir ${EXP_DIR} \
+    --vit_backbone swin_nano \
+    --pretrained_path ./pretrained_model/swin_nano_patch4_window7_224.pth \
+    --with_box_refine \
+    --batch_size 2 \
+    --enc_layers 0 \
+    --lr_backbone 1e-4 \
+    --lr 1e-4 \
+    --lr_linear_proj_mult 1 \
+    --lr_scheduler cosinelr \
+    --two_stage \
+    --eff_query_init \
+    --eff_specific_head \
+    --proposal_net default \
+    # --proposal_net rpn_default \
+    # --proposal_net fcos \
+    # --proposal_net retina \
+
+    --dec_layer 1 \
+    --neck_decoder def_decoder \
+    # --neck_decoder cond_decoder \
+    # --neck_decoder detr_decoder \
+
+    ${PY_ARGS}
