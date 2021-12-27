@@ -137,6 +137,7 @@ class DefaultProposalNet(nn.Module):
         # hack implementation for two-stage Deformable DETR
         enc_outputs_class = self.class_embed(output_memory)
         enc_outputs_coord_unact = self.bbox_embed(output_memory) + output_proposals
+        enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
         if self.has_dec:
             topk = self.num_proposals
             if self.eff_specific_head:
@@ -160,9 +161,9 @@ class DefaultProposalNet(nn.Module):
                 query_embed = pos_trans_out
             else:
                 query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
-            return enc_outputs_class, enc_outputs_coord_unact, reference_points, query_embed, tgt, enc_outputs_fg_class
+            return enc_outputs_class, enc_outputs_coord, reference_points, query_embed, tgt, enc_outputs_fg_class
         else:
-            return enc_outputs_class, enc_outputs_coord_unact, None, None, None, None
+            return enc_outputs_class, enc_outputs_coord, None, None, None, None
 
 class RpnDefaultProposalNet(nn.Module):
     def __init__(self, d_model=256, num_classes=91, num_proposals=300, 
@@ -267,6 +268,7 @@ class RpnDefaultProposalNet(nn.Module):
         # hack implementation for two-stage Deformable DETR
         enc_outputs_class = self.class_embed(output_memory)
         enc_outputs_coord_unact = self.bbox_embed(output_memory) + output_proposals
+        enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
         if self.has_dec:
             topk = self.num_proposals
             if self.eff_specific_head:
@@ -290,9 +292,9 @@ class RpnDefaultProposalNet(nn.Module):
                 query_embed = pos_trans_out
             else:
                 query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
-            return enc_outputs_class, enc_outputs_coord_unact, reference_points, query_embed, tgt, enc_outputs_fg_class
+            return enc_outputs_class, enc_outputs_coord, reference_points, query_embed, tgt, enc_outputs_fg_class
         else:
-            return enc_outputs_class, enc_outputs_coord_unact, None,None,None, None
+            return enc_outputs_class, enc_outputs_coord, None,None,None, None
 
 
 class RetinaProposalNet(nn.Module):
@@ -476,6 +478,7 @@ class RetinaProposalNet(nn.Module):
     def forward(self, memory, mask_flatten, spatial_shapes,level_start_index,valid_ratios):
         bs, _, c = memory.shape
         enc_outputs_class, enc_outputs_coord_unact = self.gen_encoder_output_proposals(memory, mask_flatten, spatial_shapes)
+        enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
         if self.has_dec:
             topk = self.num_proposals
             if self.eff_specific_head:
@@ -501,9 +504,9 @@ class RetinaProposalNet(nn.Module):
                 query_embed = pos_trans_out
             else:
                 query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
-            return enc_outputs_class, enc_outputs_coord_unact, reference_points, query_embed, tgt, enc_outputs_fg_class
+            return enc_outputs_class, enc_outputs_coord, reference_points, query_embed, tgt, enc_outputs_fg_class
         else:
-            return enc_outputs_class, enc_outputs_coord_unact, None, None, None, None
+            return enc_outputs_class, enc_outputs_coord, None, None, None, None
 
 class FcosProposalNet(nn.Module):
     def __init__(self, d_model=256, num_classes=91, num_proposals=300,
@@ -630,6 +633,7 @@ class FcosProposalNet(nn.Module):
     def forward(self, memory, mask_flatten, spatial_shapes,level_start_index,valid_ratios):
         bs, _, c = memory.shape
         enc_outputs_class, enc_outputs_coord_unact = self.gen_encoder_output_proposals(memory, mask_flatten, spatial_shapes)
+        enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
         if self.has_dec:
             topk = self.num_proposals
             if self.eff_specific_head:
@@ -654,9 +658,9 @@ class FcosProposalNet(nn.Module):
                 query_embed = pos_trans_out
             else:
                 query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
-            return enc_outputs_class, enc_outputs_coord_unact, reference_points, query_embed, tgt, enc_outputs_fg_class
+            return enc_outputs_class, enc_outputs_coord, reference_points, query_embed, tgt, enc_outputs_fg_class
         else:
-            return enc_outputs_class, enc_outputs_coord_unact, None, None, None, None
+            return enc_outputs_class, enc_outputs_coord, None, None, None, None
 
 class MLP(nn.Module):
     """ Very simple multi-layer perceptron (also called FFN)"""

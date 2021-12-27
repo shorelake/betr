@@ -207,9 +207,9 @@ class DeformableDETR(nn.Module):
         if not self.two_stage and not self.init_query_from_backbone:
             query_embeds = self.query_embed.weight
         if not self.init_query_from_backbone:
-            hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact = self.transformer(srcs, masks, pos, query_embeds)
+            hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord = self.transformer(srcs, masks, pos, query_embeds)
         else:
-            hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact = self.transformer(srcs, masks, pos, query_embed=det_pos, tgt=det_tokens)
+            hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord = self.transformer(srcs, masks, pos, query_embed=det_pos, tgt=det_tokens)
         if self.has_dec:
             outputs_classes = []
             outputs_coords = []
@@ -241,11 +241,11 @@ class DeformableDETR(nn.Module):
                 out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
 
             if self.two_stage:
-                enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
+                # enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
                 out['enc_outputs'] = {'pred_logits': enc_outputs_class, 'pred_boxes': enc_outputs_coord}
             return out
         else:
-            enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
+            # enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
             out = {'pred_logits': enc_outputs_class, 'pred_boxes': enc_outputs_coord}
             return out
 
