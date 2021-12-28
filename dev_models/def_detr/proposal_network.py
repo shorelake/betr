@@ -297,6 +297,175 @@ class RpnDefaultProposalNet(nn.Module):
             return enc_outputs_class, enc_outputs_coord, None,None,None, None
 
 
+class RpnDefaultProposalNetV2(nn.Module):
+    def __init__(self, d_model=256, num_classes=91, num_proposals=300, 
+                 eff_query_init=False, eff_specific_head=False,
+                 has_dec=True):
+        super().__init__()
+        self.has_dec=has_dec
+        self.num_classes = num_classes
+        self.num_proposals = num_proposals
+        self.eff_query_init = eff_query_init
+        self.eff_specific_head = eff_specific_head
+        
+        # self.enc_output = nn.Linear(d_model, d_model)
+        # self.enc_output_norm = nn.LayerNorm(d_model)
+
+        self.rpn_tower = nn.Sequential(
+            nn.Conv2d(d_model,d_model,kernel_size=3,stride=1,padding=1,bias=True),
+            nn.GroupNorm(32, d_model),
+            nn.ReLU(inplace=True)
+        )
+
+
+        self.pos_trans = nn.Linear(d_model * 2, d_model * (1 if self.eff_query_init else 2))
+        self.pos_trans_norm = nn.LayerNorm(d_model * (1 if self.eff_query_init else 2))
+
+        self.class_embed = nn.Linear(d_model, num_classes)
+        self.bbox_embed = MLP(d_model, d_model, 4, 3)
+        
+    def _reset_parameters(self):
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                torch.nn.init.normal_(m.weight, std=0.01)
+                torch.nn.init.constant_(m.bias, 0)
+        prior_prob = 0.01
+        bias_value = -math.log((1 - prior_prob) / prior_prob)
+        self.class_embed.bias.data = torch.ones(self.num_classes) * bias_value
+        nn.init.normal_(self.bbox_embed.layers[-1].weight.data, 0)
+        nn.init.constant_(self.bbox_embed.layers[-1].bias.data, 0)
+        # nn.init.constant_(self.bbox_embed.layers[-1].bias.data[2:], 0.0)
+
+    def get_proposal_pos_embed(self, proposals):
+        num_pos_feats = 128
+        temperature = 10000
+        scale = 2 * math.pi
+
+        dim_t = torch.arange(num_pos_feats, dtype=torch.float32, device=proposals.device)
+        dim_t = temperature ** (2 * (dim_t // 2) / num_pos_feats)
+        # N, L, 4
+        proposals = proposals * scale
+        # N, L, 4, 128
+        pos = proposals[:, :, :, None] / dim_t
+        # N, L, 4, 64, 2
+        pos = torch.stack((pos[:, :, :, 0::2].sin(), pos[:, :, :, 1::2].cos()), dim=4).flatten(2)
+        return pos
+
+    def bbox_transform_inv(self, proposal, bbox_deltas): # TODO
+        dx = bbox_deltas[:,:,0]
+        dy = bbox_deltas[:,:,1]
+        dw = bbox_deltas[:,:,2]
+        dh = bbox_deltas[:,:,3]
+
+        pred_ctr_x = proposal[:,:,0] + dx
+        pred_ctr_y = proposal[:,:,1] + dy
+        pred_w = torch.exp(dw) * proposal[:,:,2]
+        pred_h = torch.exp(dh) * proposal[:,:,3]
+
+        # Prevent sending too large values into torch.exp()
+        pred_w = torch.clamp(pred_w, max=1.)
+        pred_h = torch.clamp(pred_h, max=1.)
+
+        pred_boxes = torch.stack((pred_ctr_x,pred_ctr_y,pred_w,pred_h),dim=-1)
+
+        return pred_boxes.reshape(bbox_deltas.shape)
+
+
+    def gen_encoder_output_proposals(self, memory, memory_padding_mask, spatial_shapes):
+        N_, S_, C_ = memory.shape
+        base_scale = 4.0
+        proposals = []
+        output_memory = []
+        outputs_coord = []
+        outputs_class = []
+        _cur = 0
+        for lvl, (H_, W_) in enumerate(spatial_shapes):
+            mask = memory_padding_mask[:, _cur:(_cur + H_ * W_)]
+            mask_flatten_ = mask.view(N_, H_, W_, 1)
+            valid_H = torch.sum(~mask_flatten_[:, :, 0, 0], 1)
+            valid_W = torch.sum(~mask_flatten_[:, 0, :, 0], 1)
+
+            grid_y, grid_x = torch.meshgrid(torch.linspace(0, H_ - 1, H_, dtype=torch.float32, device=memory.device),
+                                            torch.linspace(0, W_ - 1, W_, dtype=torch.float32, device=memory.device))
+            grid = torch.cat([grid_x.unsqueeze(-1), grid_y.unsqueeze(-1)], -1)
+
+            scale = torch.cat([valid_W.unsqueeze(-1), valid_H.unsqueeze(-1)], 1).view(N_, 1, 1, 2)
+            grid = (grid.unsqueeze(0).expand(N_, -1, -1, -1) + 0.5) / scale
+            wh = torch.ones_like(grid) * 0.05 * (2.0 ** lvl)
+            proposal = torch.cat((grid, wh), -1).view(N_, -1, 4)
+
+            import pdb;pdb.set_trace()
+            proposal_valid = ((proposal > 0.01) & (proposal < 0.99)).all(-1, keepdim=True)
+            proposal =  proposal.masked_fill(mask.unsqueeze(-1), float(1.0))
+            proposal = proposal.masked_fill(~proposal_valid, float(1.0))
+
+
+            # proposals.append(proposal)
+            memory_lvl = memory[:, _cur:(_cur + H_ * W_), :]#.view(N_,H_,W_,C_).permute(0,3,1,2) # N C H W
+
+            memory_lvl = memory_lvl.view(N_,H_,W_,C_).permute(0,3,1,2) # N C H W
+            memory_lvl = self.rpn_tower(memory_lvl) # N C H W
+
+            memory_lvl = memory_lvl.flatten(2).permute(0,2,1) # N HW C
+
+            bbox_deltas = self.bbox_embed(memory_lvl)
+            bbox = self.bbox_transform_inv(proposal, bbox_deltas)
+
+
+
+            outputs_coord.append(bbox)
+            output_memory.append(memory_lvl)
+
+            _cur += (H_ * W_)
+
+        # output_proposals = torch.cat(proposals, 1)
+        # output_proposals_valid = ((output_proposals > 0.01) & (output_proposals < 0.99)).all(-1, keepdim=True)
+        # output_proposals = torch.log(output_proposals / (1 - output_proposals)) # inverse sigmoid
+        # output_proposals = output_proposals.masked_fill(memory_padding_mask.unsqueeze(-1), float('inf'))
+        # output_proposals = output_proposals.masked_fill(~output_proposals_valid, float('inf'))
+        output_memory = torch.cat(output_memory,1)
+        outputs_coord = torch.cat(outputs_coord,1)
+        return output_memory, outputs_coord
+
+    def forward(self, memory, mask_flatten, spatial_shapes,level_start_index,valid_ratios):
+        bs, _, c = memory.shape
+        output_memory, enc_outputs_coord = self.gen_encoder_output_proposals(memory, mask_flatten, spatial_shapes)
+        # hack implementation for two-stage Deformable DETR
+        enc_outputs_class = self.class_embed(output_memory)
+        # enc_outputs_coord_unact = self.bbox_embed(output_memory) + output_proposals
+        # enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
+        if self.has_dec:
+            topk = self.num_proposals
+            if self.eff_specific_head:
+                # take the best score for judging objectness with class specific head
+                enc_outputs_fg_class = enc_outputs_class.topk(1, dim=2).values[... , 0]
+            else:
+                # take the score from the binary(fore/background) classfier 
+                # though outputs have 91 output dim, the 1st dim. alone will be used for the loss computation.
+                enc_outputs_fg_class = enc_outputs_class[..., 0]
+
+            topk_proposals = torch.topk(enc_outputs_fg_class, topk, dim=1)[1]
+            topk_coords = torch.gather(enc_outputs_coord, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
+            topk_coords = topk_coords.detach()
+            reference_points = topk_coords
+            init_reference_out = reference_points
+            pos_trans_out = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords)))
+
+            if self.eff_query_init:
+                # Efficient-DETR uses top-k memory as the initialization of `tgt` (query vectors)
+                tgt = torch.gather(output_memory, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, output_memory.size(-1)))
+                query_embed = pos_trans_out
+            else:
+                query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
+            return enc_outputs_class, enc_outputs_coord, reference_points, query_embed, tgt, enc_outputs_fg_class
+        else:
+            return enc_outputs_class, enc_outputs_coord, None,None,None, None
+
+
 class RetinaProposalNet(nn.Module):
     def __init__(self, d_model=256, num_classes=91, num_proposals=300,
                  eff_query_init=False, eff_specific_head=False,
@@ -699,6 +868,17 @@ def build_proposal_network(args):
     elif args.proposal_net == 'rpn_default':
         logger.info(f'build rpn default proposal net')
         return RpnDefaultProposalNet(
+            d_model=args.hidden_dim,
+            num_classes= 1 if args.agn_proposal else num_classes,
+            num_proposals=args.num_queries,
+            eff_query_init=args.eff_query_init,
+            eff_specific_head=args.eff_specific_head,
+            has_dec=has_dec
+        )
+    elif args.proposal_net == 'rpn_default_v2': # TODO
+        logger.error(f'build rpn default proposal v2 net, not IMPLEMENT YET!')
+        raise ValueError(f'build rpn default proposal v2 net, not IMPLEMENT YET!')
+        return RpnDefaultProposalNetV2(
             d_model=args.hidden_dim,
             num_classes= 1 if args.agn_proposal else num_classes,
             num_proposals=args.num_queries,

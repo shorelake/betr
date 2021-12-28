@@ -31,6 +31,11 @@ import copy
 from models.cnn_necks import build_cnn_encoder
 from models import cnn_necks
 
+
+from typing import List
+# import torch
+from torchvision.ops import boxes as tv_box_ops
+from torchvision.ops import nms  # BC-compat
 from loguru import logger
 
 def _get_clones(module, N):
@@ -463,7 +468,6 @@ class SetCriterion(nn.Module):
 
 class PostProcess(nn.Module):
     """ This module converts the model's output into the format expected by the coco api"""
-
     @torch.no_grad()
     def forward(self, outputs, target_sizes):
         """ Perform the computation
@@ -494,7 +498,63 @@ class PostProcess(nn.Module):
         results = [{'scores': s, 'labels': l, 'boxes': b} for s, l, b in zip(scores, labels, boxes)]
 
         return results
+    @torch.no_grad()
+    def nms_forward(self, outputs, target_sizes):
+        """ Perform the computation
+        Parameters:
+            outputs: raw outputs of the model
+            target_sizes: tensor of dimension [batch_size x 2] containing the size of each images of the batch
+                          For evaluation, this must be the original image size (before any data augmentation)
+                          For visualization, this should be the image size after data augment, but before padding
+        """
+        num_boxes = 100
+        # import pdb;pdb.set_trace()
+        out_logits, out_bbox = outputs['pred_logits'], outputs['pred_boxes']
 
+        assert len(out_logits) == len(target_sizes)
+        assert target_sizes.shape[1] == 2
+        results = []
+        prob = out_logits.sigmoid()
+        for i, (scores_per_image, box_pred_per_image,image_size) in enumerate(zip(prob,out_bbox,target_sizes)):
+            boxes = box_ops.box_cxcywh_to_xyxy(box_pred_per_image)
+            h,w = image_size
+            scale_fct = torch.tensor([w,h,w,h], device=target_sizes.device)
+            boxes = boxes * scale_fct
+
+            scores, labels = torch.max(scores_per_image,dim=1)
+            keep = batched_nms(boxes, 
+                    scores, 
+                    labels, 
+                    0.5)
+            i = keep[:num_boxes]
+            boxes = boxes[i]
+            scores = scores[i]
+            labels = labels[i]
+            results.append({'scores':scores, 'labels':labels, 'boxes':boxes})
+
+        return results
+
+def batched_nms(
+    boxes: torch.Tensor, scores: torch.Tensor, idxs: torch.Tensor, iou_threshold: float
+):
+    """
+    Same as torchvision.ops.boxes.batched_nms, but safer.
+    """
+    assert boxes.shape[-1] == 4
+    # TODO may need better strategy.
+    # Investigate after having a fully-cuda NMS op.
+    if len(boxes) < 40000:
+        # fp16 does not have enough range for batched NMS
+        return tv_box_ops.batched_nms(boxes.float(), scores, idxs, iou_threshold)
+
+    result_mask = scores.new_zeros(scores.size(), dtype=torch.bool)
+    for id in torch.jit.annotate(List[int], torch.unique(idxs).cpu().tolist()):
+        mask = (idxs == id).nonzero().view(-1)
+        keep = nms(boxes[mask], scores[mask], iou_threshold)
+        result_mask[mask[keep]] = True
+    keep = result_mask.nonzero().view(-1)
+    keep = keep[scores[keep].argsort(descending=True)]
+    return keep
 
 class MLP(nn.Module):
     """ Very simple multi-layer perceptron (also called FFN)"""
