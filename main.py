@@ -239,7 +239,11 @@ def get_args_parser():
     parser.add_argument('--neck_decoder', default='def_decoder', type=str,
                         help="Name of the neck_decoder to use, now support def_decoder default, cond_decoder") #TODO
     parser.add_argument('--topk_kv', default=False, action='store_true',
-                        help="only support in cond_decoder to prune kv")            
+                        help="only support in cond_decoder to prune kv")
+
+    ## proposal network loss
+    parser.add_argument('--my_enc_loss', default=False, action='store_true',
+                        help="use my enc loss instead")           
     return parser
 
 

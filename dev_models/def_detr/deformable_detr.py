@@ -44,7 +44,7 @@ def _get_clones(module, N):
 
 class DeformableDETR(nn.Module):
     """ This is the Deformable DETR module that performs object detection """
-    def __init__(self, backbone, transformer, num_classes, num_queries, num_feature_levels,
+    def __init__(self, criterion, backbone, transformer, num_classes, num_queries, num_feature_levels,
                  aux_loss=True, with_box_refine=False, two_stage=False, args=None, cnn_neck=None):
         """ Initializes the model.
         Parameters:
@@ -58,6 +58,9 @@ class DeformableDETR(nn.Module):
             two_stage: two-stage Deformable DETR
         """
         super().__init__()
+
+        self.criterion = criterion
+
         self.num_queries = num_queries
         self.transformer = transformer
         hidden_dim = transformer.d_model
@@ -142,10 +145,12 @@ class DeformableDETR(nn.Module):
 
         self.init_query_from_backbone = args.init_query_from_backbone
 
-    def forward(self, samples: NestedTensor):
-        """ The forward expects a NestedTensor, which consists of:
-               - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
-               - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
+    def forward(self, samples):
+        """ The forward expects a List, which consists of:
+               - samples[0]  NestedTensor
+                - samples[0].tensor: batched images, of shape [batch_size x 3 x H x W]
+                - samples[0].mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
+               - samples[1]=targets Dict
 
             It returns a dict with the following elements:
                - "pred_logits": the classification logits (including no-object) for all queries.
@@ -157,12 +162,15 @@ class DeformableDETR(nn.Module):
                - "aux_outputs": Optional, only returned when auxilary losses are activated. It is a list of
                                 dictionnaries containing the two above keys for each decoder layer.
         """
-        if not isinstance(samples, NestedTensor):
-            samples = nested_tensor_from_tensor_list(samples)
+        if not isinstance(samples[0], NestedTensor):
+            samples[0] = nested_tensor_from_tensor_list(samples[0])
+        targets = None
+        if len(samples) == 2:
+            targets = samples[1]
         if not self.init_query_from_backbone:
-            features, pos = self.backbone(samples)
+            features, pos = self.backbone(samples[0])
         else:
-            features, pos, det_tokens, det_pos = self.backbone(samples)
+            features, pos, det_tokens, det_pos = self.backbone(samples[0])
         if self.cnn_encoder is None:
             srcs = []
             masks = []
@@ -178,7 +186,7 @@ class DeformableDETR(nn.Module):
                         src = self.input_proj[l](features[-1].tensors)
                     else:
                         src = self.input_proj[l](srcs[-1])
-                    m = samples.mask
+                    m = samples[0].mask
                     mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
                     pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)
                     srcs.append(src)
@@ -201,7 +209,7 @@ class DeformableDETR(nn.Module):
                         src = self.input_proj[input_proj_index](features[-1].tensors)
                     else:
                         src = self.input_proj[input_proj_index](srcs[-1])
-                    m = samples.mask
+                    m = samples[0].mask
                     mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
                     pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)
                     srcs.append(src)
@@ -212,9 +220,9 @@ class DeformableDETR(nn.Module):
         if not self.two_stage and not self.init_query_from_backbone:
             query_embeds = self.query_embed.weight
         if not self.init_query_from_backbone:
-            hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord = self.transformer(srcs, masks, pos, query_embeds)
+            hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord = self.transformer(srcs, masks, pos, query_embeds, targets=targets)
         else:
-            hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord = self.transformer(srcs, masks, pos, query_embed=det_pos, tgt=det_tokens)
+            hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord = self.transformer(srcs, masks, pos, query_embed=det_pos, tgt=det_tokens, targets=targets)
         if self.has_dec:
             outputs_classes = []
             outputs_coords = []
@@ -248,10 +256,15 @@ class DeformableDETR(nn.Module):
             if self.two_stage:
                 # enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
                 out['enc_outputs'] = {'pred_logits': enc_outputs_class, 'pred_boxes': enc_outputs_coord}
-            return out
+            
         else:
             # enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
             out = {'pred_logits': enc_outputs_class, 'pred_boxes': enc_outputs_coord}
+        
+        if self.training:
+            loss_dict = self.criterion(out, targets)
+            return out, loss_dict
+        else:
             return out
 
     @torch.jit.unused
@@ -269,14 +282,17 @@ class SetCriterion(nn.Module):
         1) we compute hungarian assignment between ground truth boxes and the outputs of the model
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
-    def __init__(self, num_classes, matcher, weight_dict, losses, eff_specific_head=False, focal_alpha=0.25):
+    def __init__(self, num_classes, matcher, weight_dict, losses, eff_specific_head=False, focal_alpha=0.25,
+                 my_enc_loss=False):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
             matcher: module able to compute a matching between targets and proposals
             weight_dict: dict containing as key the names of the losses and as values their relative weight.
             losses: list of all the losses to be applied. See get_loss for list of available losses.
+            eff_specific_head: two stage enc class specific loss
             focal_alpha: alpha in Focal Loss
+            my_enc_loss: if support my own label assign loss for two stage proposal network
         """
         super().__init__()
         self.num_classes = num_classes
@@ -285,6 +301,7 @@ class SetCriterion(nn.Module):
         self.losses = losses
         self.focal_alpha = focal_alpha
         self.eff_specific_head = eff_specific_head
+        self.my_enc_loss = my_enc_loss
 
     def loss_labels(self, outputs, targets, indices, num_boxes, log=True, enc_outputs=False):
         """Classification loss (NLL)
@@ -425,6 +442,7 @@ class SetCriterion(nn.Module):
         losses = {}
         for loss in self.losses:
             kwargs = {}
+            # import pdb;pdb.set_trace()
             losses.update(self.get_loss(loss, outputs, targets, indices, num_boxes, **kwargs))
 
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
@@ -442,26 +460,26 @@ class SetCriterion(nn.Module):
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **kwargs)
                     l_dict = {k + f'_{i}': v for k, v in l_dict.items()}
                     losses.update(l_dict)
-
-        if 'enc_outputs' in outputs:
-            enc_outputs = outputs['enc_outputs']
-            bin_targets = copy.deepcopy(targets)
-            if not self.eff_specific_head:
-                for bt in bin_targets:
-                    bt['labels'] = torch.zeros_like(bt['labels'])
-            indices = self.matcher(enc_outputs, bin_targets)
-            for loss in self.losses:
-                if loss == 'masks':
-                    # Intermediate masks losses are too costly to compute, we ignore them.
-                    continue
-                kwargs = {}
-                if loss == 'labels':
-                    # Logging is enabled only for the last layer
-                    kwargs['log'] = False
-                    kwargs['enc_outputs'] = True
-                l_dict = self.get_loss(loss, enc_outputs, bin_targets, indices, num_boxes, **kwargs)
-                l_dict = {k + f'_enc': v for k, v in l_dict.items()}
-                losses.update(l_dict)
+        if not self.my_enc_loss:
+            if 'enc_outputs' in outputs:
+                enc_outputs = outputs['enc_outputs']
+                bin_targets = copy.deepcopy(targets)
+                if not self.eff_specific_head:
+                    for bt in bin_targets:
+                        bt['labels'] = torch.zeros_like(bt['labels'])
+                indices = self.matcher(enc_outputs, bin_targets)
+                for loss in self.losses:
+                    if loss == 'masks':
+                        # Intermediate masks losses are too costly to compute, we ignore them.
+                        continue
+                    kwargs = {}
+                    if loss == 'labels':
+                        # Logging is enabled only for the last layer
+                        kwargs['log'] = False
+                        kwargs['enc_outputs'] = True
+                    l_dict = self.get_loss(loss, enc_outputs, bin_targets, indices, num_boxes, **kwargs)
+                    l_dict = {k + f'_enc': v for k, v in l_dict.items()}
+                    losses.update(l_dict)
 
         return losses
 
@@ -604,18 +622,6 @@ def build(args):
         logger.warning(f'neck_encoder is {neck_encoder}, NOT using CNN necks')
         neck_encoder = None
     logger.info(f'building cnn neck encoder {neck_encoder}')
-    model = DeformableDETR(
-        backbone,
-        transformer,
-        num_classes=num_classes,
-        num_queries=args.num_queries,
-        num_feature_levels=args.num_feature_levels,
-        aux_loss=args.aux_loss,
-        with_box_refine=args.with_box_refine,
-        two_stage=args.two_stage,
-        args=args,
-        cnn_neck=neck_encoder,
-    )
     if args.masks:
         model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))
     matcher = build_matcher(args)
@@ -636,8 +642,27 @@ def build(args):
     if args.masks:
         losses += ["masks"]
     # num_classes, matcher, weight_dict, losses, focal_alpha=0.25
-    criterion = SetCriterion(num_classes, matcher, weight_dict, losses, eff_specific_head=args.eff_specific_head, focal_alpha=args.focal_alpha)
+    criterion = SetCriterion(num_classes, matcher, weight_dict, losses, eff_specific_head=args.eff_specific_head, 
+                             focal_alpha=args.focal_alpha, my_enc_loss = args.my_enc_loss)
+    
+    model = DeformableDETR(
+        criterion,
+        backbone,
+        transformer,
+        num_classes=num_classes,
+        num_queries=args.num_queries,
+        num_feature_levels=args.num_feature_levels,
+        aux_loss=args.aux_loss,
+        with_box_refine=args.with_box_refine,
+        two_stage=args.two_stage,
+        args=args,
+        cnn_neck=neck_encoder,
+    )
+    
+    
     criterion.to(device)
+
+
     postprocessors = {'bbox': PostProcess()}
     if args.masks:
         postprocessors['segm'] = PostProcessSegm()

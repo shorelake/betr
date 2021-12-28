@@ -131,7 +131,7 @@ class DefaultProposalNet(nn.Module):
 
         return output_memory, output_proposals
 
-    def forward(self, memory, mask_flatten, spatial_shapes,level_start_index,valid_ratios):
+    def forward(self, memory, mask_flatten, spatial_shapes,level_start_index,valid_ratios, targets=None):
         bs, _, c = memory.shape
         output_memory, output_proposals = self.gen_encoder_output_proposals(memory, mask_flatten, spatial_shapes)
         # hack implementation for two-stage Deformable DETR
@@ -168,8 +168,9 @@ class DefaultProposalNet(nn.Module):
 class RpnDefaultProposalNet(nn.Module):
     def __init__(self, d_model=256, num_classes=91, num_proposals=300, 
                  eff_query_init=False, eff_specific_head=False,
-                 has_dec=True):
+                 has_dec=True, my_enc_loss=False):
         super().__init__()
+        self.my_enc_loss=my_enc_loss
         self.has_dec=has_dec
         self.num_classes = num_classes
         self.num_proposals = num_proposals
@@ -262,7 +263,9 @@ class RpnDefaultProposalNet(nn.Module):
         output_memory = torch.cat(output_memory,1)
         return output_memory, output_proposals
 
-    def forward(self, memory, mask_flatten, spatial_shapes,level_start_index,valid_ratios):
+    def forward(self, memory, mask_flatten, spatial_shapes,level_start_index,valid_ratios, targets=None):
+        assert self.training and targets is not None
+
         bs, _, c = memory.shape
         output_memory, output_proposals = self.gen_encoder_output_proposals(memory, mask_flatten, spatial_shapes)
         # hack implementation for two-stage Deformable DETR
@@ -799,7 +802,7 @@ class FcosProposalNet(nn.Module):
         outputs_coord_unact = torch.cat(outputs_coord_unact, 1)
         return outputs_class, outputs_coord_unact
 
-    def forward(self, memory, mask_flatten, spatial_shapes,level_start_index,valid_ratios):
+    def forward(self, memory, mask_flatten, spatial_shapes,level_start_index,valid_ratios, targets=None):
         bs, _, c = memory.shape
         enc_outputs_class, enc_outputs_coord_unact = self.gen_encoder_output_proposals(memory, mask_flatten, spatial_shapes)
         enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
@@ -863,7 +866,8 @@ def build_proposal_network(args):
             num_proposals=args.num_queries,
             eff_query_init=args.eff_query_init,
             eff_specific_head=args.eff_specific_head,
-            has_dec=has_dec
+            has_dec=has_dec,
+            my_enc_loss=args.my_enc_loss
         )
     elif args.proposal_net == 'rpn_default':
         logger.info(f'build rpn default proposal net')
@@ -873,7 +877,8 @@ def build_proposal_network(args):
             num_proposals=args.num_queries,
             eff_query_init=args.eff_query_init,
             eff_specific_head=args.eff_specific_head,
-            has_dec=has_dec
+            has_dec=has_dec,
+            my_enc_loss=args.my_enc_loss
         )
     elif args.proposal_net == 'rpn_default_v2': # TODO
         logger.error(f'build rpn default proposal v2 net, not IMPLEMENT YET!')
@@ -884,7 +889,8 @@ def build_proposal_network(args):
             num_proposals=args.num_queries,
             eff_query_init=args.eff_query_init,
             eff_specific_head=args.eff_specific_head,
-            has_dec=has_dec
+            has_dec=has_dec,
+            my_enc_loss=args.my_enc_loss
         )
     elif args.proposal_net == 'rpn':
         logger.error(f'build rpn default proposal net, not IMPLEMENT YET!')
@@ -895,7 +901,8 @@ def build_proposal_network(args):
             num_proposals=args.num_queries,
             eff_query_init=args.eff_query_init,
             eff_specific_head=args.eff_specific_head,
-            has_dec=has_dec
+            has_dec=has_dec,
+            my_enc_loss=args.my_enc_loss
         )
     elif args.proposal_net == 'fcos':
         # TODO
@@ -906,7 +913,8 @@ def build_proposal_network(args):
             num_proposals=args.num_queries,
             eff_query_init=args.eff_query_init,
             eff_specific_head=args.eff_specific_head,
-            has_dec=has_dec
+            has_dec=has_dec,
+            my_enc_loss=args.my_enc_loss
         )
     elif args.proposal_net == 'retina':
         # TODO
@@ -918,5 +926,6 @@ def build_proposal_network(args):
             num_proposals=args.num_queries,
             eff_query_init=args.eff_query_init,
             eff_specific_head=args.eff_specific_head,
-            has_dec=has_dec
+            has_dec=has_dec,
+            my_enc_loss=args.my_enc_loss
         )

@@ -133,9 +133,9 @@ class DeformableTransformer(nn.Module):
         valid_ratio = torch.stack([valid_ratio_w, valid_ratio_h], -1)
         return valid_ratio
 
-    def forward(self, srcs, masks, pos_embeds, query_embed=None, tgt=None):
+    def forward(self, srcs, masks, pos_embeds, query_embed=None, tgt=None, targets=None):
         assert self.two_stage or query_embed is not None
-
+        assert self.training and targets is not None
         # prepare input for encoder
         src_flatten = []
         mask_flatten = []
@@ -175,7 +175,7 @@ class DeformableTransformer(nn.Module):
         enc_outputs_class = None
         if self.two_stage:
             enc_outputs_class, enc_outputs_coord, reference_points, query_embed, tgt, enc_outputs_fg_class = \
-                self.proposal(memory,mask_flatten,spatial_shapes,level_start_index,valid_ratios)
+                self.proposal(memory,mask_flatten,spatial_shapes,level_start_index,valid_ratios, targets=targets)
             init_reference_out = reference_points
         else:
             if not self.init_query_from_backbone:
