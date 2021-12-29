@@ -135,7 +135,7 @@ class DeformableTransformer(nn.Module):
 
     def forward(self, srcs, masks, pos_embeds, query_embed=None, tgt=None, targets=None):
         assert self.two_stage or query_embed is not None
-        assert self.training and targets is not None
+        # assert self.training and targets is not None
         # prepare input for encoder
         src_flatten = []
         mask_flatten = []

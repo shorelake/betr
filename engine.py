@@ -181,7 +181,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
             outputs = model(samples,sample_ratio, gt_masks, dam_masks)
             # outputs = model(samples, sample_ratio=sample_ratio)
         else:
-            outputs = model(samples)
+            outputs = model([samples])
         loss_dict = criterion(outputs, targets)
         weight_dict = criterion.weight_dict
 

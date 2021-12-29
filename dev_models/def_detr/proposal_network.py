@@ -364,7 +364,7 @@ class RpnDefaultProposalNet(nn.Module):
         return output_memory, output_proposals
 
     def forward(self, memory, mask_flatten, spatial_shapes,level_start_index,valid_ratios, targets=None):
-        assert self.training and targets is not None
+        # assert self.training and targets is not None
 
         bs, _, c = memory.shape
         output_memory, output_proposals = self.gen_encoder_output_proposals(memory, mask_flatten, spatial_shapes)
@@ -712,7 +712,7 @@ class RpnDefaultAssignProposalNet(nn.Module):
 
 
     def forward(self, memory, mask_flatten, spatial_shapes,level_start_index,valid_ratios, targets=None):
-        assert self.training and targets is not None
+        # assert self.training and targets is not None
 
         bs, _, c = memory.shape
         output_memory, output_proposals = self.gen_encoder_output_proposals(memory, mask_flatten, spatial_shapes)
@@ -724,9 +724,11 @@ class RpnDefaultAssignProposalNet(nn.Module):
         # hack implementation for anchor matcher
         anchors = output_proposals.sigmoid()
         # import pdb;pdb.set_trace()
-        gt_labels, gt_boxes = self.label_anchors(anchors, targets)
-        # import pdb;pdb.set_trace()
-        enc_loss = self.losses(enc_outputs_coord, enc_outputs_class, gt_labels, gt_boxes)
+        enc_loss = None
+        if targets is not None:
+            gt_labels, gt_boxes = self.label_anchors(anchors, targets)
+            # import pdb;pdb.set_trace()
+            enc_loss = self.losses(enc_outputs_coord, enc_outputs_class, gt_labels, gt_boxes)
         if self.has_dec:
             if self.eff_specific_head:
                 # take the best score for judging objectness with class specific head
