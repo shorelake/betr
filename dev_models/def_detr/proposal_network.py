@@ -428,6 +428,7 @@ class RpnDefaultAssignProposalNet(nn.Module):
         self.bbox_embed = MLP(d_model, d_model, 4, 3)
         
         self.anchor_matcher = AnchorMatcher([0.4, 0.5],[0, -1, 1],allow_low_quality_matches=True)
+        self.pre_nms_topk=2000
 
     def _reset_parameters(self):
         for p in self.parameters():
@@ -453,7 +454,7 @@ class RpnDefaultAssignProposalNet(nn.Module):
         dim_t = torch.arange(num_pos_feats, dtype=torch.float32, device=proposals.device)
         dim_t = temperature ** (2 * (dim_t // 2) / num_pos_feats)
         # N, L, 4
-        proposals = proposals.sigmoid() * scale
+        proposals = proposals * scale
         # N, L, 4, 128
         pos = proposals[:, :, :, None] / dim_t
         # N, L, 4, 64, 2
@@ -539,7 +540,7 @@ class RpnDefaultAssignProposalNet(nn.Module):
                 # Anchors with label -1 are ignored.
                 gt_labels_i[anchor_labels == -1] = -1
             else:
-                matched_gt_boxes_i = torch.zeros_like(anchors.tensor)
+                matched_gt_boxes_i = torch.zeros_like(anchor_per_image)
                 gt_labels_i = torch.zeros_like(matched_idxs) + self.num_classes
 
             gt_labels.append(gt_labels_i)
@@ -625,6 +626,90 @@ class RpnDefaultAssignProposalNet(nn.Module):
 
         return loss
 
+    def predict_instances(self, enc_outputs_class, enc_outputs_coord, spatial_shapes,level_start_index, output_memory):
+        # import pdb;pdb.set_trace()
+        enc_outputs_class = enc_outputs_class.sigmoid()
+        num_images,_,_ = enc_outputs_class.shape
+        device = enc_outputs_class.device
+        # if self.eff_specific_head:
+        #     # take the best score for judging objectness with class specific head
+        #     enc_outputs_fg_class = enc_outputs_class.topk(1, dim=2).values[... , 0]
+        # else:
+        #     # take the score from the binary(fore/background) classfier 
+        #     # though outputs have 91 output dim, the 1st dim. alone will be used for the loss computation.
+        #     enc_outputs_fg_class = enc_outputs_class[..., 0]
+        _cur = 0
+        pre_nms_sampled_boxes = []
+        pre_nms_sampled_memory = []
+
+        # with torch.no_grad():
+
+        # 1. Select top-k anchor for every level and every image
+        topk_scores = []  # #lvl Tensor, each of shape N x topk
+        topk_labels = []
+        topk_memory = []
+        topk_proposals = []
+        level_ids = []  # #lvl Tensor, each of shape (topk,)
+        batch_idx = torch.arange(num_images, device=device)
+        for lvl , (H_, W_) in enumerate(spatial_shapes):
+            lvl_heatmap = enc_outputs_class[:, _cur:(_cur + H_ * W_),:] # N, HW, C
+            lvl_box_reg = enc_outputs_coord[:, _cur:(_cur + H_ * W_),:]
+            lvl_memory = output_memory[:, _cur:(_cur + H_ * W_),:]
+            lvl_scores, lvl_labels = torch.max(lvl_heatmap,dim=2)
+            Hi_Wi_A = lvl_scores.shape[1]
+            if isinstance(Hi_Wi_A, torch.Tensor):  # it's a tensor in tracing
+                num_proposals_i = torch.clamp(Hi_Wi_A, max=self.pre_nms_topk)
+            else:
+                num_proposals_i = min(Hi_Wi_A, self.pre_nms_topk)
+
+            topk_scores_i, topk_idx = lvl_scores.topk(num_proposals_i, dim=1)
+
+            # each is N x topk
+            topk_proposals_i = lvl_box_reg[batch_idx[:, None], topk_idx]  # N x topk x 4
+
+            topk_memory_i = lvl_memory[batch_idx[:, None], topk_idx]
+
+            topk_labels_i = lvl_labels[batch_idx[:, None], topk_idx]
+
+            topk_proposals.append(topk_proposals_i)
+            topk_scores.append(topk_scores_i)
+            topk_memory.append(topk_memory_i)
+            topk_labels.append(topk_labels_i)
+            level_ids.append(torch.full((num_proposals_i,), lvl, dtype=torch.int64, device=device))
+
+        # 2. Concat all levels together
+        topk_scores = torch.cat(topk_scores, dim=1)
+        topk_labels = torch.cat(topk_labels, dim=1)
+        topk_proposals = torch.cat(topk_proposals, dim=1)
+        topk_memory = torch.cat(topk_memory, dim=1)
+        level_ids = torch.cat(level_ids, dim=0)
+
+        reference_points=[]
+        tgt=[]
+        # import pdb;pdb.set_trace()
+        for n in range(num_images):
+            boxes = topk_proposals[n]
+            scores = topk_scores[n]
+            labels = topk_labels[n]
+            memory = topk_memory[n]
+            xyxyboxes = box_ops.box_cxcywh_to_xyxy(boxes)
+
+            keep = box_ops.batched_nms(xyxyboxes, 
+                    scores, 
+                    labels, 
+                    0.5)
+            keep = keep[:self.num_proposals]
+            reference_points.append(boxes[keep])
+            tgt.append(memory[keep])
+        
+        reference_points = torch.stack(reference_points)
+        tgt = torch.stack(tgt)
+
+        reference_points = reference_points.detach()
+        query_embed = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(reference_points)))
+
+        return reference_points, query_embed, tgt 
+
 
     def forward(self, memory, mask_flatten, spatial_shapes,level_start_index,valid_ratios, targets=None):
         assert self.training and targets is not None
@@ -643,7 +728,6 @@ class RpnDefaultAssignProposalNet(nn.Module):
         # import pdb;pdb.set_trace()
         enc_loss = self.losses(enc_outputs_coord, enc_outputs_class, gt_labels, gt_boxes)
         if self.has_dec:
-            topk = self.num_proposals
             if self.eff_specific_head:
                 # take the best score for judging objectness with class specific head
                 enc_outputs_fg_class = enc_outputs_class.topk(1, dim=2).values[... , 0]
@@ -651,20 +735,9 @@ class RpnDefaultAssignProposalNet(nn.Module):
                 # take the score from the binary(fore/background) classfier 
                 # though outputs have 91 output dim, the 1st dim. alone will be used for the loss computation.
                 enc_outputs_fg_class = enc_outputs_class[..., 0]
-
-            topk_proposals = torch.topk(enc_outputs_fg_class, topk, dim=1)[1]
-            topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
-            topk_coords_unact = topk_coords_unact.detach()
-            reference_points = topk_coords_unact.sigmoid()
-            init_reference_out = reference_points
-            pos_trans_out = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords_unact)))
-
-            if self.eff_query_init:
-                # Efficient-DETR uses top-k memory as the initialization of `tgt` (query vectors)
-                tgt = torch.gather(output_memory, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, output_memory.size(-1)))
-                query_embed = pos_trans_out
-            else:
-                query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
+            # import pdb;pdb.set_trace()
+            reference_points, query_embed, tgt = self.predict_instances(enc_outputs_class, enc_outputs_coord,
+                                                                        spatial_shapes,level_start_index, output_memory)
             return enc_outputs_class, enc_outputs_coord, reference_points, query_embed, tgt, enc_outputs_fg_class, enc_loss
         else:
             return enc_outputs_class, enc_outputs_coord, None,None,None, None, enc_loss

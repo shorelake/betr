@@ -33,9 +33,6 @@ from models import cnn_necks
 
 
 from typing import List
-# import torch
-from torchvision.ops import boxes as tv_box_ops
-from torchvision.ops import nms  # BC-compat
 from loguru import logger
 
 def _get_clones(module, N):
@@ -544,7 +541,7 @@ class PostProcess(nn.Module):
             boxes = boxes * scale_fct
 
             scores, labels = torch.max(scores_per_image,dim=1)
-            keep = batched_nms(boxes, 
+            keep = box_ops.batched_nms(boxes, 
                     scores, 
                     labels, 
                     0.5)
@@ -556,27 +553,6 @@ class PostProcess(nn.Module):
 
         return results
 
-def batched_nms(
-    boxes: torch.Tensor, scores: torch.Tensor, idxs: torch.Tensor, iou_threshold: float
-):
-    """
-    Same as torchvision.ops.boxes.batched_nms, but safer.
-    """
-    assert boxes.shape[-1] == 4
-    # TODO may need better strategy.
-    # Investigate after having a fully-cuda NMS op.
-    if len(boxes) < 40000:
-        # fp16 does not have enough range for batched NMS
-        return tv_box_ops.batched_nms(boxes.float(), scores, idxs, iou_threshold)
-
-    result_mask = scores.new_zeros(scores.size(), dtype=torch.bool)
-    for id in torch.jit.annotate(List[int], torch.unique(idxs).cpu().tolist()):
-        mask = (idxs == id).nonzero().view(-1)
-        keep = nms(boxes[mask], scores[mask], iou_threshold)
-        result_mask[mask[keep]] = True
-    keep = result_mask.nonzero().view(-1)
-    keep = keep[scores[keep].argsort(descending=True)]
-    return keep
 
 class MLP(nn.Module):
     """ Very simple multi-layer perceptron (also called FFN)"""

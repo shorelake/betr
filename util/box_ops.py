@@ -12,7 +12,9 @@ Utilities for bounding box manipulation and GIoU.
 """
 import torch
 from torchvision.ops.boxes import box_area
-
+from torchvision.ops import boxes as tv_box_ops
+from torchvision.ops import nms  # BC-compat
+from typing import List
 
 def box_cxcywh_to_xyxy(x):
     x_c, y_c, w, h = x.unbind(-1)
@@ -96,3 +98,26 @@ def masks_to_boxes(masks):
     y_min = y_mask.masked_fill(~(masks.bool()), 1e8).flatten(1).min(-1)[0]
 
     return torch.stack([x_min, y_min, x_max, y_max], 1)
+
+
+def batched_nms(
+    boxes: torch.Tensor, scores: torch.Tensor, idxs: torch.Tensor, iou_threshold: float
+):
+    """
+    Same as torchvision.ops.boxes.batched_nms, but safer.
+    """
+    assert boxes.shape[-1] == 4
+    # TODO may need better strategy.
+    # Investigate after having a fully-cuda NMS op.
+    if len(boxes) < 40000:
+        # fp16 does not have enough range for batched NMS
+        return tv_box_ops.batched_nms(boxes.float(), scores, idxs, iou_threshold)
+
+    result_mask = scores.new_zeros(scores.size(), dtype=torch.bool)
+    for id in torch.jit.annotate(List[int], torch.unique(idxs).cpu().tolist()):
+        mask = (idxs == id).nonzero().view(-1)
+        keep = nms(boxes[mask], scores[mask], iou_threshold)
+        result_mask[mask[keep]] = True
+    keep = result_mask.nonzero().view(-1)
+    keep = keep[scores[keep].argsort(descending=True)]
+    return keep
