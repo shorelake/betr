@@ -174,7 +174,7 @@ class DeformableTransformer(nn.Module):
         bs, _, c = memory.shape
         enc_outputs_class = None
         if self.two_stage:
-            enc_outputs_class, enc_outputs_coord, reference_points, query_embed, tgt, enc_outputs_fg_class = \
+            enc_outputs_class, enc_outputs_coord, reference_points, query_embed, tgt, enc_outputs_fg_class, enc_loss = \
                 self.proposal(memory,mask_flatten,spatial_shapes,level_start_index,valid_ratios, targets=targets)
             init_reference_out = reference_points
         else:
@@ -198,8 +198,8 @@ class DeformableTransformer(nn.Module):
             inter_references_out = None
 
         if self.two_stage:
-            return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord
-        return hs, init_reference_out, inter_references_out, None, None
+            return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord, enc_loss
+        return hs, init_reference_out, inter_references_out, None, None, None
 
 class MsiSsoDeformableTransformerEncoderLayer(nn.Module):
     def __init__(self,

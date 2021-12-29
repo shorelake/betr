@@ -220,9 +220,9 @@ class DeformableDETR(nn.Module):
         if not self.two_stage and not self.init_query_from_backbone:
             query_embeds = self.query_embed.weight
         if not self.init_query_from_backbone:
-            hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord = self.transformer(srcs, masks, pos, query_embeds, targets=targets)
+            hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord, enc_loss = self.transformer(srcs, masks, pos, query_embeds, targets=targets)
         else:
-            hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord = self.transformer(srcs, masks, pos, query_embed=det_pos, tgt=det_tokens, targets=targets)
+            hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord, enc_loss = self.transformer(srcs, masks, pos, query_embed=det_pos, tgt=det_tokens, targets=targets)
         if self.has_dec:
             outputs_classes = []
             outputs_coords = []
@@ -263,6 +263,10 @@ class DeformableDETR(nn.Module):
         
         if self.training:
             loss_dict = self.criterion(out, targets)
+            # import pdb;pdb.set_trace()
+            if enc_loss is not None:
+                enc_loss = {k + f'_enc': v for k, v in enc_loss.items()}
+                loss_dict.update(enc_loss)
             return out, loss_dict
         else:
             return out

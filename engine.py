@@ -96,6 +96,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         if args.with_pnp_sampler:
             loss_dict['sample_reg_loss']=outputs['sample_reg_loss']
         weight_dict = criterion.weight_dict
+        import pdb;pdb.set_trace()
         losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
 
         # reduce losses over all GPUs for logging purposes
