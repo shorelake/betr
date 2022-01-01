@@ -320,7 +320,7 @@ def main(args):
             gflops = 0
             for input_shape in val_shapes_first_100():
                 dummy_input = torch.randn(1, *input_shape).cuda()
-                g = flop_count(model, dummy_input, _DEFAULT_SUPPORTED_OPS)[0]
+                g = flop_count(model, [dummy_input], _DEFAULT_SUPPORTED_OPS)[0]
                 gflops += sum(g.values())
             gflops /= 100
 

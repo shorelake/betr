@@ -239,8 +239,23 @@ class DeformableDETR(nn.Module):
                         tmp[..., :2] += reference
                     outputs_coord = tmp.sigmoid()
                 else:
-                    outputs_class = self.class_embed[lvl](hs[lvl])
-                    outputs_coord = inter_references[lvl]
+                    if self.with_box_refine:
+                        outputs_class = self.class_embed[lvl](hs[lvl])
+                        outputs_coord = inter_references[lvl]
+                    else:
+                        if lvl == 0:
+                            reference = init_reference
+                        else:
+                            reference = inter_references[lvl - 1]
+                        reference = inverse_sigmoid(reference)
+                        outputs_class = self.class_embed[lvl](hs[lvl])
+                        tmp = self.bbox_embed[lvl](hs[lvl])
+                        if reference.shape[-1] == 4:
+                            tmp += reference
+                        else:
+                            assert reference.shape[-1] == 2
+                            tmp[..., :2] += reference
+                        outputs_coord = tmp.sigmoid()
                 outputs_classes.append(outputs_class)
                 outputs_coords.append(outputs_coord)
             outputs_class = torch.stack(outputs_classes)

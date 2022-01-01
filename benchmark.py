@@ -43,7 +43,7 @@ def measure_average_inference_time(model, inputs, num_iters=100, warm_iters=5):
     for iter_ in range(num_iters):
         torch.cuda.synchronize()
         t_ = time.perf_counter()
-        model(inputs)
+        model([inputs])
         torch.cuda.synchronize()
         t = time.perf_counter() - t_
         if iter_ >= warm_iters:
