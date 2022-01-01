@@ -41,7 +41,7 @@ def _get_clones(module, N):
 
 class DeformableDETR(nn.Module):
     """ This is the Deformable DETR module that performs object detection """
-    def __init__(self, criterion, backbone, transformer, num_classes, num_queries, num_feature_levels,
+    def __init__(self, backbone, transformer, num_classes, num_queries, num_feature_levels,
                  aux_loss=True, with_box_refine=False, two_stage=False, args=None, cnn_neck=None):
         """ Initializes the model.
         Parameters:
@@ -55,8 +55,6 @@ class DeformableDETR(nn.Module):
             two_stage: two-stage Deformable DETR
         """
         super().__init__()
-
-        self.criterion = criterion
 
         self.num_queries = num_queries
         self.transformer = transformer
@@ -616,6 +614,18 @@ def build(args):
         logger.warning(f'neck_encoder is {neck_encoder}, NOT using CNN necks')
         neck_encoder = None
     logger.info(f'building cnn neck encoder {neck_encoder}')
+    model = DeformableDETR(
+        backbone,
+        transformer,
+        num_classes=num_classes,
+        num_queries=args.num_queries,
+        num_feature_levels=args.num_feature_levels,
+        aux_loss=args.aux_loss,
+        with_box_refine=args.with_box_refine,
+        two_stage=args.two_stage,
+        args=args,
+        cnn_neck=neck_encoder,
+    )
     if args.masks:
         model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))
     matcher = build_matcher(args)
@@ -644,20 +654,7 @@ def build(args):
     criterion = SetCriterion(num_classes, matcher, enc_matcher, weight_dict, losses, eff_specific_head=args.eff_specific_head, 
                              focal_alpha=args.focal_alpha, my_enc_loss = args.my_enc_loss)
     
-    model = DeformableDETR(
-        criterion,
-        backbone,
-        transformer,
-        num_classes=num_classes,
-        num_queries=args.num_queries,
-        num_feature_levels=args.num_feature_levels,
-        aux_loss=args.aux_loss,
-        with_box_refine=args.with_box_refine,
-        two_stage=args.two_stage,
-        args=args,
-        cnn_neck=neck_encoder,
-    )
-    
+  
     
     criterion.to(device)
 
