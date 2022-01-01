@@ -22,7 +22,7 @@ from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
 
 # from .backbone import build_backbone as build_swin_backbone
 from dev_models.backbone_factory import build_backbone
-from dev_models.matcher import build_matcher
+from dev_models.matcher import build_matcher, HungarianMatcher
 from dev_models.segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
 from .deformable_transformer import build_deforamble_transformer
@@ -298,7 +298,7 @@ class SetCriterion(nn.Module):
         1) we compute hungarian assignment between ground truth boxes and the outputs of the model
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
-    def __init__(self, num_classes, matcher, weight_dict, losses, eff_specific_head=False, focal_alpha=0.25,
+    def __init__(self, num_classes, matcher, enc_matcher, weight_dict, losses, eff_specific_head=False, focal_alpha=0.25,
                  my_enc_loss=False):
         """ Create the criterion.
         Parameters:
@@ -313,6 +313,7 @@ class SetCriterion(nn.Module):
         super().__init__()
         self.num_classes = num_classes
         self.matcher = matcher
+        self.enc_matcher = enc_matcher
         self.weight_dict = weight_dict
         self.losses = losses
         self.focal_alpha = focal_alpha
@@ -458,7 +459,6 @@ class SetCriterion(nn.Module):
         losses = {}
         for loss in self.losses:
             kwargs = {}
-            # import pdb;pdb.set_trace()
             losses.update(self.get_loss(loss, outputs, targets, indices, num_boxes, **kwargs))
 
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
@@ -483,7 +483,7 @@ class SetCriterion(nn.Module):
                 if not self.eff_specific_head:
                     for bt in bin_targets:
                         bt['labels'] = torch.zeros_like(bt['labels'])
-                indices = self.matcher(enc_outputs, bin_targets)
+                indices = self.enc_matcher(enc_outputs, bin_targets)
                 for loss in self.losses:
                     if loss == 'masks':
                         # Intermediate masks losses are too costly to compute, we ignore them.
@@ -620,6 +620,11 @@ def build(args):
     if args.masks:
         model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))
     matcher = build_matcher(args)
+    enc_matcher = None
+    if args.two_stage:
+        enc_matcher = HungarianMatcher(cost_class=args.set_cost_class / 4,
+                            cost_bbox=args.set_cost_bbox,
+                            cost_giou=args.set_cost_giou)
     weight_dict = {'loss_ce': args.cls_loss_coef, 'loss_bbox': args.bbox_loss_coef}
     weight_dict['loss_giou'] = args.giou_loss_coef
     if args.masks:
@@ -637,7 +642,7 @@ def build(args):
     if args.masks:
         losses += ["masks"]
     # num_classes, matcher, weight_dict, losses, focal_alpha=0.25
-    criterion = SetCriterion(num_classes, matcher, weight_dict, losses, eff_specific_head=args.eff_specific_head, 
+    criterion = SetCriterion(num_classes, matcher, enc_matcher, weight_dict, losses, eff_specific_head=args.eff_specific_head, 
                              focal_alpha=args.focal_alpha, my_enc_loss = args.my_enc_loss)
     
     model = DeformableDETR(
