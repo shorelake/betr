@@ -273,15 +273,14 @@ class DeformableDETR(nn.Module):
             # enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
             out = {'pred_logits': enc_outputs_class, 'pred_boxes': enc_outputs_coord}
         
-        if self.training:
-            loss_dict = self.criterion(out, targets)
-            # import pdb;pdb.set_trace()
-            if enc_loss is not None:
-                enc_loss = {k + f'_enc': v for k, v in enc_loss.items()}
-                loss_dict.update(enc_loss)
-            return out, loss_dict
-        else:
-            return out
+        # if self.training:
+        #     loss_dict = self.criterion(out, targets)
+        #     # import pdb;pdb.set_trace()
+        #     if enc_loss is not None:
+        #         enc_loss = {k + f'_enc': v for k, v in enc_loss.items()}
+        #         loss_dict.update(enc_loss)
+        #     return out, loss_dict
+        return out
 
     @torch.jit.unused
     def _set_aux_loss(self, outputs_class, outputs_coord):

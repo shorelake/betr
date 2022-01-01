@@ -88,11 +88,11 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                 sample_ratio = args.sample_topk_ratio
                 outputs = model(samples,sample_ratio, gt_masks, dam_masks)
             else:
-                outputs, loss_dict = model([samples,targets])
+                outputs = model([samples])
         except RuntimeError as exception:
             logger.error(str(exception))
             raise exception
-        # loss_dict = criterion(outputs, targets)
+        loss_dict = criterion(outputs, targets)
         if args.with_pnp_sampler:
             loss_dict['sample_reg_loss']=outputs['sample_reg_loss']
         weight_dict = criterion.weight_dict
