@@ -25,7 +25,7 @@ from typing import Tuple, Optional
 
 import torch
 from torch import Tensor
-from torch.nn.modules.linear import _LinearWithBias
+# from torch.nn.modules.linear import _LinearWithBias
 from torch.nn.init import xavier_uniform_
 from torch.nn.init import constant_
 from torch.nn.init import xavier_normal_
@@ -50,6 +50,14 @@ else:
 Tensor = torch.Tensor
 
 from torch.nn.functional import linear, pad, softmax, dropout
+
+# This class exists solely for Transformer; it has an annotation stating
+# that bias is never None, which appeases TorchScript
+class _LinearWithBias(torch.nn.Linear):
+    bias: Tensor  # type: ignore[assignment]
+
+    def __init__(self, in_features: int, out_features: int) -> None:
+        super().__init__(in_features, out_features, bias=True)
 
 class MultiheadAttention(Module):
     r"""Allows the model to jointly attend to information

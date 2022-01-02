@@ -98,6 +98,12 @@ class DeformableTransformer(nn.Module):
                 if self.sso_index > num_feature_levels -1:
                     logger.error(f'WRONG, --msi_sso_encoder {msi_sso_encoder}, --num_feature_levels {num_feature_levels}')
                     raise ValueError(f'WRONG, --msi_sso_encoder {msi_sso_encoder}, --num_feature_levels {num_feature_levels}')
+                    
+                if neck_decoder == 'def_decoder':
+                    decoder_layer = DeformableTransformerDecoderLayer(d_model, dim_feedforward,
+                                                                    dropout, activation,
+                                                                    1, nhead, dec_n_points, only_selfattn_dec)
+                    self.decoder = DeformableTransformerDecoder(decoder_layer, num_decoder_layers, return_intermediate_dec) if num_decoder_layers !=0 else None
 
         if two_stage:
             self.proposal = proposal
