@@ -333,7 +333,8 @@ class SpatialPriorHungarianMatcher(nn.Module):
                 if len(gt_boxes) == 0:
                     continue
                 else:
-                    orig_target_sizes = targets_per_image["orig_size"]
+                    # import pdb;pdb.set_trace()
+                    orig_target_sizes = targets_per_image["size"]
                     img_h, img_w = orig_target_sizes.unbind()
                     scale_fct = torch.stack([img_w, img_h, img_w, img_h])
                     scale_gt_boxes = gt_boxes * scale_fct
@@ -363,12 +364,14 @@ class SpatialPriorHungarianMatcher(nn.Module):
                     
                     spatial_prior.append(is_in_boxes.transpose(0,1))
                     # import pdb;pdb.set_trace()
-            INF = 1e8
-            spatial_prior = torch.cat(spatial_prior,dim=1)
-            spatial_prior = spatial_prior.unsqueeze(0).expand(bs,-1,-1)
-            C[~spatial_prior] = INF
+            if len(spatial_prior) !=0:
+                INF = 1e8
+                spatial_prior = torch.cat(spatial_prior,dim=1)
+                spatial_prior = spatial_prior.unsqueeze(0).expand(bs,-1,-1)
+                C[~spatial_prior] = INF
+            # else:
+            #     import pdb;pdb.set_trace()
 
-            
             C = C.cpu()
             sizes = [len(v["boxes"]) for v in targets]
 
