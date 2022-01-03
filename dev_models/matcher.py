@@ -10,13 +10,15 @@
 """
 Modules to compute the matching cost and solve the corresponding LSAP.
 """
+from numpy.core.fromnumeric import size
 import torch
 from scipy.optimize import linear_sum_assignment
 from torch import nn
 
 from util.box_ops import box_cxcywh_to_xyxy, generalized_box_iou
+from util import box_ops
 from typing import List
-
+import copy
 def nonzero_tuple(x):
     """
     A 'as_tuple=True' version of torch.nonzero to support torchscript.
@@ -28,6 +30,22 @@ def nonzero_tuple(x):
         return x.nonzero().unbind(1)
     else:
         return x.nonzero(as_tuple=True)
+
+def _create_grid_offsets(size, stride, offset, device):
+    grid_height, grid_width = size
+    shifts_start = offset * stride
+    shifts_x = torch.arange(
+        shifts_start, grid_width * stride + shifts_start, step=stride,
+        dtype=torch.float32, device=device
+    )
+    shifts_y = torch.arange(
+        shifts_start, grid_height * stride + shifts_start, step=stride,
+        dtype=torch.float32, device=device
+    )
+    shift_y, shift_x = torch.meshgrid(shifts_y, shifts_x)
+    shift_x = shift_x.reshape(-1)
+    shift_y = shift_y.reshape(-1)
+    return shift_x, shift_y
 
 class AnchorMatcher(object):
     """
@@ -227,8 +245,178 @@ class HungarianMatcher(nn.Module):
             indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
             return [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
 
+class SpatialPriorHungarianMatcher(nn.Module):
+    """This class computes an assignment between the targets and the predictions of the network
+
+    For efficiency reasons, the targets don't include the no_object. Because of this, in general,
+    there are more predictions than targets. In this case, we do a 1-to-1 matching of the best predictions,
+    while the others are un-matched (and thus treated as non-objects).
+    """
+
+    def __init__(self,
+                 cost_class: float = 1,
+                 cost_bbox: float = 1,
+                 cost_giou: float = 1):
+        """Creates the matcher
+
+        Params:
+            cost_class: This is the relative weight of the classification error in the matching cost
+            cost_bbox: This is the relative weight of the L1 error of the bounding box coordinates in the matching cost
+            cost_giou: This is the relative weight of the giou loss of the bounding box in the matching cost
+        """
+        super().__init__()
+        self.cost_class = cost_class
+        self.cost_bbox = cost_bbox
+        self.cost_giou = cost_giou
+        assert cost_class != 0 or cost_bbox != 0 or cost_giou != 0, "all costs cant be 0"
+
+    def forward(self, outputs, targets):
+        """ Performs the matching
+
+        Params:
+            outputs: This is a dict that contains at least these entries:
+                 "pred_logits": Tensor of dim [batch_size, num_queries, num_classes] with the classification logits
+                 "pred_boxes": Tensor of dim [batch_size, num_queries, 4] with the predicted box coordinates
+
+            targets: This is a list of targets (len(targets) = batch_size), where each target is a dict containing:
+                 "labels": Tensor of dim [num_target_boxes] (where num_target_boxes is the number of ground-truth
+                           objects in the target) containing the class labels
+                 "boxes": Tensor of dim [num_target_boxes, 4] containing the target box coordinates
+
+        Returns:
+            A list of size batch_size, containing tuples of (index_i, index_j) where:
+                - index_i is the indices of the selected predictions (in order)
+                - index_j is the indices of the corresponding selected targets (in order)
+            For each batch element, it holds:
+                len(index_i) = len(index_j) = min(num_queries, num_target_boxes)
+        """
+        with torch.no_grad():
+            # import pdb;pdb.set_trace()
+            
+            bs, num_queries = outputs["pred_logits"].shape[:2]
+
+            strides = outputs['strides']
+            shifts = self.generate_shifts(outputs['strides'], outputs['spatial_shapes'], bs)
+            
+
+            # We flatten to compute the cost matrices in a batch
+            out_prob = outputs["pred_logits"].flatten(0, 1).sigmoid()
+            out_bbox = outputs["pred_boxes"].flatten(0, 1)  # [batch_size * num_queries, 4]
+
+            # Also concat the target labels and boxes
+            tgt_ids = torch.cat([v["labels"] for v in targets])
+            tgt_bbox = torch.cat([v["boxes"] for v in targets])
+
+            # Compute the classification cost.
+            alpha = 0.25
+            gamma = 2.0
+            neg_cost_class = (1 - alpha) * (out_prob ** gamma) * (-(1 - out_prob + 1e-8).log())
+            pos_cost_class = alpha * ((1 - out_prob) ** gamma) * (-(out_prob + 1e-8).log())
+            cost_class = pos_cost_class[:, tgt_ids] - neg_cost_class[:, tgt_ids]
+
+            # Compute the L1 cost between boxes
+            cost_bbox = torch.cdist(out_bbox, tgt_bbox, p=1)
+
+            # Compute the giou cost betwen boxes
+            cost_giou = -generalized_box_iou(box_cxcywh_to_xyxy(out_bbox),
+                                             box_cxcywh_to_xyxy(tgt_bbox))
+
+            # Final cost matrix
+            C = self.cost_bbox * cost_bbox + self.cost_class * cost_class + self.cost_giou * cost_giou
+            C = C.view(bs, num_queries, -1)
+
+            # get spatial prior
+            spatial_prior = []
+            center_sampling_radius = 1.5 # when center_sampling_radius = 0, all in gt boxes count
+            for i, (shifts_per_image, targets_per_image) in enumerate(zip(shifts, targets)):
+                gt_boxes = targets_per_image['boxes']
+                if len(gt_boxes) == 0:
+                    continue
+                else:
+                    orig_target_sizes = targets_per_image["orig_size"]
+                    img_h, img_w = orig_target_sizes.unbind()
+                    scale_fct = torch.stack([img_w, img_h, img_w, img_h])
+                    scale_gt_boxes = gt_boxes * scale_fct
+                    centers = scale_gt_boxes[:,:2]
+
+                    scale_gt_boxes = box_ops.box_cxcywh_to_xyxy(scale_gt_boxes)
+                    shifts_over_all_feature_maps = torch.cat(shifts_per_image, dim=0)
+                    deltas = self.get_deltas(
+                        shifts_over_all_feature_maps, scale_gt_boxes.unsqueeze(1))                
+
+
+                    if center_sampling_radius > 0:
+                        is_in_boxes = []
+                        for stride, shifts_i in zip(strides, shifts_per_image):
+                            radius = stride * center_sampling_radius
+                            center_boxes = torch.cat((
+                                torch.max(centers - radius, scale_gt_boxes[:, :2]),
+                                torch.min(centers + radius, scale_gt_boxes[:, 2:]),
+                            ), dim=-1)
+                            center_deltas = self.get_deltas(
+                                shifts_i, center_boxes.unsqueeze(1))
+                            is_in_boxes.append(center_deltas.min(dim=-1).values > 0)
+                        is_in_boxes = torch.cat(is_in_boxes, dim=1)
+                    else:
+                        # no center sampling, it will use all the locations within a ground-truth box
+                        is_in_boxes = deltas.min(dim=-1).values > 0
+                    
+                    spatial_prior.append(is_in_boxes.transpose(0,1))
+                    # import pdb;pdb.set_trace()
+            INF = 1e8
+            spatial_prior = torch.cat(spatial_prior,dim=1)
+            spatial_prior = spatial_prior.unsqueeze(0).expand(bs,-1,-1)
+            C[~spatial_prior] = INF
+
+            
+            C = C.cpu()
+            sizes = [len(v["boxes"]) for v in targets]
+
+            indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
+            return [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
+
+    def grid_shifts(self, grid_sizes, strides, device):
+        offset = 0.5
+        num_shifts = 1
+        shifts_over_all = []
+        for size, stride in zip(grid_sizes, strides):
+            shift_x, shift_y = _create_grid_offsets(size, stride, offset, device)
+            shifts = torch.stack((shift_x, shift_y), dim=1)
+
+            shifts_over_all.append(shifts.repeat_interleave(num_shifts, dim=0))
+
+        return shifts_over_all
+
+    def generate_shifts(self, strides, spatial_shapes, bs):
+        shifts_over_all = self.grid_shifts(spatial_shapes, strides, spatial_shapes.device)
+
+        shifts = [copy.deepcopy(shifts_over_all) for _ in range(bs)]
+        return shifts
+
+    def get_deltas(self, shifts, boxes):
+        """
+        Get box regression transformation deltas (dl, dt, dr, db) that can be used
+        to transform the `shifts` into the `boxes`. That is, the relation
+        ``boxes == self.apply_deltas(deltas, shifts)`` is true.
+
+        Args:
+            shifts (Tensor): shifts, e.g., feature map coordinates
+            boxes (Tensor): target of the transformation, e.g., ground-truth
+                boxes.
+        """
+        assert isinstance(shifts, torch.Tensor), type(shifts)
+        assert isinstance(boxes, torch.Tensor), type(boxes)
+        weights = (1.0,1.0,1.0,1.0)
+        deltas = torch.cat((shifts - boxes[..., :2], boxes[..., 2:] - shifts),
+                           dim=-1) * shifts.new_tensor(weights)
+        return deltas
 
 def build_matcher(args):
     return HungarianMatcher(cost_class=args.set_cost_class,
+                            cost_bbox=args.set_cost_bbox,
+                            cost_giou=args.set_cost_giou)
+
+def build_dense_matcher(args):
+    return SpatialPriorHungarianMatcher(cost_class=args.set_cost_class,
                             cost_bbox=args.set_cost_bbox,
                             cost_giou=args.set_cost_giou)

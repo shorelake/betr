@@ -165,6 +165,7 @@ class DeformableTransformer(nn.Module):
         level_start_index = torch.cat((spatial_shapes.new_zeros((1, )), spatial_shapes.prod(1).cumsum(0)[:-1]))
         valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1)
 
+        ret_spatial_shapes = spatial_shapes
         # # encoder
         # memory = self.encoder(src_flatten, spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten, mask_flatten)
         if self.encoder is not None:
@@ -204,8 +205,8 @@ class DeformableTransformer(nn.Module):
             inter_references_out = None
 
         if self.two_stage:
-            return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord, enc_loss
-        return hs, init_reference_out, inter_references_out, None, None, None
+            return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord, enc_loss, ret_spatial_shapes
+        return hs, init_reference_out, inter_references_out, None, None, None, None
 
 class MsiSsoDeformableTransformerEncoderLayer(nn.Module):
     def __init__(self,

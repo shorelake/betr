@@ -22,7 +22,7 @@ from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
 
 # from .backbone import build_backbone as build_swin_backbone
 from dev_models.backbone_factory import build_backbone
-from dev_models.matcher import build_matcher, HungarianMatcher
+from dev_models.matcher import build_matcher, HungarianMatcher, build_dense_matcher
 from dev_models.segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
 from .deformable_transformer import build_deforamble_transformer
@@ -68,6 +68,8 @@ class DeformableDETR(nn.Module):
         self.cnn_encoder = None
         if not two_stage and not args.init_query_from_backbone:
             self.query_embed = nn.Embedding(num_queries, hidden_dim*2)
+        
+        self.strides = backbone.strides
         if num_feature_levels > 1:
             num_backbone_outs = len(backbone.strides)
             input_proj_list = []
@@ -90,6 +92,7 @@ class DeformableDETR(nn.Module):
                     nn.GroupNorm(32, hidden_dim),
                 ))
                 in_channels = hidden_dim
+                self.strides.append(self.strides[-1]*2)
             self.input_proj = nn.ModuleList(input_proj_list)
         else:
             self.input_proj = nn.ModuleList([
@@ -215,9 +218,9 @@ class DeformableDETR(nn.Module):
         if not self.two_stage and not self.init_query_from_backbone:
             query_embeds = self.query_embed.weight
         if not self.init_query_from_backbone:
-            hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord, enc_loss = self.transformer(srcs, masks, pos, query_embeds, targets=targets)
+            hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord, enc_loss, spatial_shapes = self.transformer(srcs, masks, pos, query_embeds, targets=targets)
         else:
-            hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord, enc_loss = self.transformer(srcs, masks, pos, query_embed=det_pos, tgt=det_tokens, targets=targets)
+            hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord, enc_loss, spatial_shapes = self.transformer(srcs, masks, pos, query_embed=det_pos, tgt=det_tokens, targets=targets)
         if self.has_dec:
             outputs_classes = []
             outputs_coords = []
@@ -265,7 +268,8 @@ class DeformableDETR(nn.Module):
 
             if self.two_stage:
                 # enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
-                out['enc_outputs'] = {'pred_logits': enc_outputs_class, 'pred_boxes': enc_outputs_coord}
+                out['enc_outputs'] = {'pred_logits': enc_outputs_class, 'pred_boxes': enc_outputs_coord, 'spatial_shapes': spatial_shapes,
+                                      'strides':self.strides}
             
         else:
             # enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
@@ -631,9 +635,10 @@ def build(args):
     matcher = build_matcher(args)
     enc_matcher = None
     if args.two_stage:
-        enc_matcher = HungarianMatcher(cost_class=args.set_cost_class / 4,
-                            cost_bbox=args.set_cost_bbox,
-                            cost_giou=args.set_cost_giou)
+        # enc_matcher = HungarianMatcher(cost_class=args.set_cost_class,
+        #                     cost_bbox=args.set_cost_bbox,
+        #                     cost_giou=args.set_cost_giou)
+        enc_matcher = build_dense_matcher(args)
     weight_dict = {'loss_ce': args.cls_loss_coef, 'loss_bbox': args.bbox_loss_coef}
     weight_dict['loss_giou'] = args.giou_loss_coef
     if args.masks:
