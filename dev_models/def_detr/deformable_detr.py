@@ -451,7 +451,8 @@ class SetCriterion(nn.Module):
             flat_grid_attn_map_dec = flat_grid_attn_map_dec.masked_fill(
                 outputs['mask_flatten'], flat_grid_attn_map_dec.min()-1)
         valid_token_num = (~ outputs['mask_flatten']).sum(axis=-1)
-        sparse_token_nums = (valid_token_num*0.3).int()+1
+        ratio = 0.2
+        sparse_token_nums = (valid_token_num*ratio).int()+1
         # sparse_token_nums = outputs["sparse_token_nums"]
         num_topk = sparse_token_nums.max()
 
