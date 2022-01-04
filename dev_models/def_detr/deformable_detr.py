@@ -565,7 +565,6 @@ class SetCriterion(nn.Module):
                         aux_l_dict = {k + f'_enc_aux': v for k, v in aux_l_dict.items()}
                         losses.update(aux_l_dict)
                     else:
-                        import pdb;pdb.set_trace()
                         aux_l_dict = self.loss_mask_prediction(enc_outputs)
                         aux_l_dict = {k + f'_enc_aux': v for k, v in aux_l_dict.items()}
                         losses.update(aux_l_dict)
