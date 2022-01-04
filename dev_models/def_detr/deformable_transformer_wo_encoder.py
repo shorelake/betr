@@ -17,7 +17,7 @@ from torch import nn, Tensor
 from torch.nn.init import xavier_uniform_, constant_, uniform_, normal_
 
 from util.misc import inverse_sigmoid
-from models.ops.modules import MSDeformAttn
+from dev_models.ops.modules import MSDeformAttn
 from .proposal_network import build_proposal_network
 
 from .attention import MultiheadAttention
@@ -165,7 +165,7 @@ class DeformableTransformer(nn.Module):
         level_start_index = torch.cat((spatial_shapes.new_zeros((1, )), spatial_shapes.prod(1).cumsum(0)[:-1]))
         valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1)
 
-        ret_spatial_shapes = spatial_shapes
+        
         # # encoder
         # memory = self.encoder(src_flatten, spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten, mask_flatten)
         if self.encoder is not None:
@@ -178,10 +178,12 @@ class DeformableTransformer(nn.Module):
             memory, spatial_shapes, level_start_index, valid_ratios,lvl_pos_embed_flatten, mask_flatten = \
                 self.msi_sso_encoder(memory, spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten, mask_flatten, self.sso_index)
         # prepare input for decoder
+        ret_spatial_shapes = spatial_shapes
         bs, _, c = memory.shape
         enc_outputs_class = None
+        enc_outputs_mask = None
         if self.two_stage:
-            enc_outputs_class, enc_outputs_coord, reference_points, query_embed, tgt, enc_outputs_fg_class, enc_loss = \
+            enc_outputs_class, enc_outputs_coord,enc_outputs_mask, reference_points, query_embed, tgt, enc_outputs_fg_class, enc_loss = \
                 self.proposal(memory,mask_flatten,spatial_shapes,level_start_index,valid_ratios, targets=targets)
             init_reference_out = reference_points
         else:
@@ -196,17 +198,20 @@ class DeformableTransformer(nn.Module):
             init_reference_out = reference_points
         # decoder
         if self.decoder is not None:
-            hs, inter_references = self.decoder(tgt, reference_points, memory,
+            hs, inter_references, sampling_locations_dec, attn_weights_dec = self.decoder(tgt, reference_points, memory,
                                                 spatial_shapes, level_start_index, valid_ratios, query_embed, mask_flatten, lvl_pos_embed_flatten, enc_outputs_fg_class)
 
             inter_references_out = inter_references
         else:
             hs = None
             inter_references_out = None
+            sampling_locations_dec, attn_weights_dec = None, None
 
         if self.two_stage:
-            return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord, enc_loss, ret_spatial_shapes
-        return hs, init_reference_out, inter_references_out, None, None, None, None
+            return [hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord, enc_outputs_mask, enc_loss, ret_spatial_shapes,
+                   level_start_index, sampling_locations_dec, attn_weights_dec, mask_flatten]
+        return [hs, init_reference_out, inter_references_out, None, None,None, None, None, 
+                    level_start_index, sampling_locations_dec, attn_weights_dec, mask_flatten]
 
 class MsiSsoDeformableTransformerEncoderLayer(nn.Module):
     def __init__(self,
@@ -423,16 +428,16 @@ class DeformableTransformerDecoderLayer(nn.Module):
         tgt = self.norm2(tgt)
         if not self.only_selfattn_dec:
             # cross attention
-            tgt2 = self.cross_attn(self.with_pos_embed(tgt, query_pos),
+            tgt2, sampling_locations, attention_weights = self.cross_attn(self.with_pos_embed(tgt, query_pos),
                                 reference_points,
-                                src, src_spatial_shapes, level_start_index, src_padding_mask)
+                                src, src_spatial_shapes, level_start_index, src_padding_mask, ret_dec_sample=True)
             tgt = tgt + self.dropout1(tgt2)
             tgt = self.norm1(tgt)
 
         # ffn
         tgt = self.forward_ffn(tgt)
 
-        return tgt
+        return tgt, sampling_locations, attention_weights
 
 
 class DeformableTransformerDecoder(nn.Module):
@@ -451,6 +456,8 @@ class DeformableTransformerDecoder(nn.Module):
 
         intermediate = []
         intermediate_reference_points = []
+        sampling_locations_all = []
+        attn_weights_all = []
         for lid, layer in enumerate(self.layers):
             if reference_points.shape[-1] == 4:
                 reference_points_input = reference_points[:, :, None] \
@@ -458,8 +465,9 @@ class DeformableTransformerDecoder(nn.Module):
             else:
                 assert reference_points.shape[-1] == 2
                 reference_points_input = reference_points[:, :, None] * src_valid_ratios[:, None]
-            output = layer(output, query_pos, reference_points_input, src, src_spatial_shapes, src_level_start_index, src_padding_mask)
-
+            output, sampling_locations, attn_weights = layer(output, query_pos, reference_points_input, src, src_spatial_shapes, src_level_start_index, src_padding_mask)
+            sampling_locations_all.append(sampling_locations)
+            attn_weights_all.append(attn_weights)
             # hack implementation for iterative bounding box refinement
             if self.bbox_embed is not None:
                 tmp = self.bbox_embed[lid](output)
@@ -477,10 +485,14 @@ class DeformableTransformerDecoder(nn.Module):
                 intermediate.append(output)
                 intermediate_reference_points.append(reference_points)
 
-        if self.return_intermediate:
-            return torch.stack(intermediate), torch.stack(intermediate_reference_points)
+        # Change dimension from [num_layer, batch_size, ...] to [batch_size, num_layer, ...]
+        sampling_locations_all = torch.stack(sampling_locations_all, dim=1)
+        attn_weights_all = torch.stack(attn_weights_all, dim=1)
 
-        return output, reference_points
+        if self.return_intermediate:
+            return torch.stack(intermediate), torch.stack(intermediate_reference_points), sampling_locations_all, attn_weights_all
+
+        return output, reference_points, sampling_locations_all, attn_weights_all
 
 
 class ConditionalTransformerDecoderLayer(nn.Module):
@@ -598,7 +610,7 @@ class ConditionalTransformerDecoderLayer(nn.Module):
         tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt))))
         tgt = tgt + self.dropout3(tgt2)
         tgt = self.norm3(tgt)
-        return tgt
+        return tgt, None, None
 
     def forward_pre(self, tgt, memory,
                     tgt_mask: Optional[Tensor] = None,
@@ -621,7 +633,7 @@ class ConditionalTransformerDecoderLayer(nn.Module):
         tgt2 = self.norm3(tgt)
         tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt2))))
         tgt = tgt + self.dropout3(tgt2)
-        return tgt
+        return tgt, None, None
 
     def forward(self, tgt, memory,
                 tgt_mask: Optional[Tensor] = None,
@@ -735,9 +747,9 @@ class ConditionalTransformerDecoder(nn.Module):
                 intermediate.append(output)
 
         if self.return_intermediate:
-            return torch.stack(intermediate).transpose(1, 2), torch.stack(intermediate_reference_points)
+            return torch.stack(intermediate).transpose(1, 2), torch.stack(intermediate_reference_points), None, None
 
-        return output.transpose(0,1), reference_points
+        return output.transpose(0,1), reference_points,None,None
 
 
 class DETRTransformerDecoderLayer(nn.Module):
@@ -786,7 +798,7 @@ class DETRTransformerDecoderLayer(nn.Module):
         tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt))))
         tgt = tgt + self.dropout3(tgt2)
         tgt = self.norm3(tgt)
-        return tgt
+        return tgt, None, None
 
     def forward_pre(self, tgt, memory,
                     tgt_mask: Optional[Tensor] = None,
@@ -809,7 +821,7 @@ class DETRTransformerDecoderLayer(nn.Module):
         tgt2 = self.norm3(tgt)
         tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt2))))
         tgt = tgt + self.dropout3(tgt2)
-        return tgt
+        return tgt, None, None
 
     def forward(self, tgt, memory,
                 tgt_mask: Optional[Tensor] = None,
@@ -899,9 +911,9 @@ class DETRTransformerDecoder(nn.Module):
                 intermediate.append(output)
 
         if self.return_intermediate:
-            return torch.stack(intermediate).transpose(1, 2), torch.stack(intermediate_reference_points)
+            return torch.stack(intermediate).transpose(1, 2), torch.stack(intermediate_reference_points), None,None
 
-        return output.transpose(0,1), reference_points
+        return output.transpose(0,1), reference_points,None,None
 
 
 

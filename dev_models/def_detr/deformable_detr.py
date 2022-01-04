@@ -19,7 +19,7 @@ from util import box_ops
 from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
                        accuracy, get_world_size, interpolate,
                        is_dist_avail_and_initialized, inverse_sigmoid)
-
+from util.dam import attn_map_to_flat_grid
 # from .backbone import build_backbone as build_swin_backbone
 from dev_models.backbone_factory import build_backbone
 from dev_models.matcher import (build_matcher, HungarianMatcher, build_dense_matcher, 
@@ -219,9 +219,15 @@ class DeformableDETR(nn.Module):
         if not self.two_stage and not self.init_query_from_backbone:
             query_embeds = self.query_embed.weight
         if not self.init_query_from_backbone:
-            hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord, enc_loss, spatial_shapes = self.transformer(srcs, masks, pos, query_embeds, targets=targets)
+            (hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord, enc_outputs_mask, 
+             enc_loss, spatial_shapes,
+             level_start_index, sampling_locations_dec, attn_weights_dec, mask_flatten) = \
+                self.transformer(srcs, masks, pos, query_embeds, targets=targets)
         else:
-            hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord, enc_loss, spatial_shapes = self.transformer(srcs, masks, pos, query_embed=det_pos, tgt=det_tokens, targets=targets)
+            (hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord, enc_outputs_mask,
+             enc_loss, spatial_shapes,
+             level_start_index, sampling_locations_dec, attn_weights_dec, mask_flatten) = \
+                self.transformer(srcs, masks, pos, query_embed=det_pos, tgt=det_tokens, targets=targets)
         if self.has_dec:
             outputs_classes = []
             outputs_coords = []
@@ -270,7 +276,9 @@ class DeformableDETR(nn.Module):
             if self.two_stage:
                 # enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
                 out['enc_outputs'] = {'pred_logits': enc_outputs_class, 'pred_boxes': enc_outputs_coord, 'spatial_shapes': spatial_shapes,
-                                      'strides':self.strides}
+                                      'strides':self.strides, 'pred_mask':enc_outputs_mask, 'sampling_locations_dec': sampling_locations_dec,
+                                      'attn_weights_dec': attn_weights_dec, 'level_start_index':level_start_index,
+                                       'mask_flatten': mask_flatten}
             
         else:
             # enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
@@ -301,7 +309,7 @@ class SetCriterion(nn.Module):
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
     def __init__(self, num_classes, matcher, enc_matcher, enc_aux_matcher, weight_dict, losses, eff_specific_head=False, 
-                 focal_alpha=0.25, my_enc_loss=False, dense_aux_loss=False):
+                 focal_alpha=0.25, my_enc_loss=False, dense_aux_loss=None):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -417,6 +425,44 @@ class SetCriterion(nn.Module):
             "loss_dice": dice_loss(src_masks, target_masks, num_boxes),
         }
         return losses
+    # only for two stage dense part
+    def loss_mask_prediction(self, outputs):
+        assert "pred_mask" in outputs
+        assert "sampling_locations_dec" in outputs
+        assert "attn_weights_dec" in outputs
+        assert "spatial_shapes" in outputs
+        assert "level_start_index" in outputs
+        assert "mask_flatten" in outputs
+
+        mask_prediction = outputs["pred_mask"].squeeze(-1)
+        loss_key = "loss_mask_pred"
+
+        sampling_locations_dec = outputs["sampling_locations_dec"]
+        attn_weights_dec = outputs["attn_weights_dec"]
+        spatial_shapes = outputs["spatial_shapes"]
+        level_start_index = outputs["level_start_index"]
+
+        flat_grid_attn_map_dec = attn_map_to_flat_grid(
+            spatial_shapes, level_start_index, sampling_locations_dec, attn_weights_dec).sum(dim=(1,2))
+
+        losses = {}
+
+        if 'mask_flatten' in outputs:
+            flat_grid_attn_map_dec = flat_grid_attn_map_dec.masked_fill(
+                outputs['mask_flatten'], flat_grid_attn_map_dec.min()-1)
+        valid_token_num = (~ outputs['mask_flatten']).sum(axis=-1)
+        sparse_token_nums = (valid_token_num*0.3).int()+1
+        # sparse_token_nums = outputs["sparse_token_nums"]
+        num_topk = sparse_token_nums.max()
+
+        topk_idx_tgt = torch.topk(flat_grid_attn_map_dec, num_topk)[1]
+        target = torch.zeros_like(mask_prediction)
+        for i in range(target.shape[0]):
+            target[i].scatter_(0, topk_idx_tgt[i][:sparse_token_nums[i]], 1)
+
+        losses.update({loss_key: F.multilabel_soft_margin_loss(mask_prediction, target)})
+
+        return losses
 
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
@@ -502,21 +548,27 @@ class SetCriterion(nn.Module):
                     l_dict = self.get_loss(loss, enc_outputs, bin_targets, indices, num_boxes, **kwargs)
                     l_dict = {k + f'_enc': v for k, v in l_dict.items()}
                     losses.update(l_dict)
-                if self.dense_aux_loss:
-                    aux_indices = self.enc_aux_matcher(enc_outputs, bin_targets)
-                    # for aux indices loss
-                    # Compute the average number of foreground boxes accross all nodes, for normalization purposes
-                    aux_num_boxes = sum(len(aux_indice[1]) for aux_indice in aux_indices)
-                    aux_num_boxes = torch.as_tensor([aux_num_boxes], dtype=torch.float, device=next(iter(outputs.values())).device)
-                    if is_dist_avail_and_initialized():
-                        torch.distributed.all_reduce(aux_num_boxes)
-                    aux_num_boxes = torch.clamp(aux_num_boxes / get_world_size(), min=1).item()
-                    aux_kwargs = {}
-                    aux_kwargs['log'] = False
-                    aux_kwargs['enc_outputs'] = True
-                    aux_l_dict = self.loss_labels(enc_outputs, bin_targets, aux_indices, aux_num_boxes, **aux_kwargs)
-                    aux_l_dict = {k + f'_enc_aux': v for k, v in aux_l_dict.items()}
-                    losses.update(aux_l_dict)
+                if self.dense_aux_loss is not None:
+                    if self.enc_aux_matcher is not None:
+                        aux_indices = self.enc_aux_matcher(enc_outputs, bin_targets)
+                        # for aux indices loss
+                        # Compute the average number of foreground boxes accross all nodes, for normalization purposes
+                        aux_num_boxes = sum(len(aux_indice[1]) for aux_indice in aux_indices)
+                        aux_num_boxes = torch.as_tensor([aux_num_boxes], dtype=torch.float, device=next(iter(outputs.values())).device)
+                        if is_dist_avail_and_initialized():
+                            torch.distributed.all_reduce(aux_num_boxes)
+                        aux_num_boxes = torch.clamp(aux_num_boxes / get_world_size(), min=1).item()
+                        aux_kwargs = {}
+                        aux_kwargs['log'] = False
+                        aux_kwargs['enc_outputs'] = True
+                        aux_l_dict = self.loss_labels(enc_outputs, bin_targets, aux_indices, aux_num_boxes, **aux_kwargs)
+                        aux_l_dict = {k + f'_enc_aux': v for k, v in aux_l_dict.items()}
+                        losses.update(aux_l_dict)
+                    else:
+                        import pdb;pdb.set_trace()
+                        aux_l_dict = self.loss_mask_prediction(enc_outputs)
+                        aux_l_dict = {k + f'_enc_aux': v for k, v in aux_l_dict.items()}
+                        losses.update(aux_l_dict)
         return losses
 
 
@@ -658,9 +710,19 @@ def build(args):
         # enc_matcher = HungarianMatcher(cost_class=args.set_cost_class,
         #                     cost_bbox=args.set_cost_bbox,
         #                     cost_giou=args.set_cost_giou)
+        logger.info('build dense matcher')
         enc_matcher = build_dense_matcher(args)
-        if args.dense_aux_loss:
+        if args.dense_aux_loss is None:
+            enc_aux_matcher = None
+        elif args.dense_aux_loss == 'o2m':
+            logger.info('build dense aux matcher for one to many loss')
             enc_aux_matcher = build_dense_aux_matcher(args)
+        elif args.dense_aux_loss == 'dam':
+            logger.info('build dense aux loss using dam loss')
+            enc_aux_matcher = None
+        else:
+            logger.error(f'WRONG --dense_aux_loss {args.dense_aux_loss}')
+            raise ValueError(f'WRONG --dense_aux_loss {args.dense_aux_loss}')
     weight_dict = {'loss_ce': args.cls_loss_coef, 'loss_bbox': args.bbox_loss_coef}
     weight_dict['loss_giou'] = args.giou_loss_coef
     if args.masks:
@@ -674,8 +736,11 @@ def build(args):
         aux_weight_dict.update({k + f'_enc': v for k, v in weight_dict.items()})
         weight_dict.update(aux_weight_dict)
     
-    if args.dense_aux_loss:
-        weight_dict['loss_ce_enc_aux'] = args.cls_loss_coef
+    if args.dense_aux_loss is not None:
+        if args.dense_aux_loss == 'o2m':
+            weight_dict['loss_ce_enc_aux'] = args.dense_aux_loss_coef
+        elif args.dense_aux_loss == 'dam':
+            weight_dict['loss_mask_pred_enc_aux'] = args.dense_aux_loss_coef
 
     losses = ['labels', 'boxes', 'cardinality']
     if args.masks:

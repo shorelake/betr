@@ -156,7 +156,7 @@ class BufferList(nn.Module):
 class DefaultProposalNet(nn.Module):
     def __init__(self, d_model=256, num_classes=91, num_proposals=300, 
                  eff_query_init=False, eff_specific_head=False,
-                 has_dec=True):
+                 has_dec=True, my_enc_loss=False, has_mask_pred=False):
         super().__init__()
         self.num_classes = num_classes
         self.num_proposals = num_proposals
@@ -172,6 +172,11 @@ class DefaultProposalNet(nn.Module):
         self.bbox_embed = MLP(d_model, d_model, 4, 3)
         
         self.has_dec = has_dec
+
+        self.mask_embed = None
+        self.has_mask_pred = has_mask_pred
+        if has_mask_pred:
+            self.mask_embed = MaskPredictor(d_model, d_model)
     def _reset_parameters(self):
         for p in self.parameters():
             if p.dim() > 1:
@@ -238,6 +243,10 @@ class DefaultProposalNet(nn.Module):
         enc_outputs_class = self.class_embed(output_memory)
         enc_outputs_coord_unact = self.bbox_embed(output_memory) + output_proposals
         enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
+
+        enc_outputs_mask = None
+        if self.mask_embed is not None:
+            enc_outputs_mask = self.mask_embed(output_memory)
         if self.has_dec:
             topk = self.num_proposals
             if self.eff_specific_head:
@@ -261,14 +270,14 @@ class DefaultProposalNet(nn.Module):
                 query_embed = pos_trans_out
             else:
                 query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
-            return enc_outputs_class, enc_outputs_coord, reference_points, query_embed, tgt, enc_outputs_fg_class,None
+            return enc_outputs_class, enc_outputs_coord, enc_outputs_mask, reference_points, query_embed, tgt, enc_outputs_fg_class,None
         else:
-            return enc_outputs_class, enc_outputs_coord, None, None, None, None,None
+            return enc_outputs_class, enc_outputs_coord,enc_outputs_mask, None,None,None, None,None
 
 class RpnDefaultProposalNet(nn.Module):
     def __init__(self, d_model=256, num_classes=91, num_proposals=300, 
                  eff_query_init=False, eff_specific_head=False,
-                 has_dec=True, my_enc_loss=False):
+                 has_dec=True, my_enc_loss=False, has_mask_pred=False):
         super().__init__()
         self.my_enc_loss=my_enc_loss
         self.has_dec=has_dec
@@ -292,6 +301,11 @@ class RpnDefaultProposalNet(nn.Module):
 
         self.class_embed = nn.Linear(d_model, num_classes)
         self.bbox_embed = MLP(d_model, d_model, 4, 3)
+
+        self.mask_embed = None
+        self.has_mask_pred = has_mask_pred
+        if has_mask_pred:
+            self.mask_embed = MaskPredictor(d_model, d_model)
         
     def _reset_parameters(self):
         for p in self.parameters():
@@ -372,6 +386,10 @@ class RpnDefaultProposalNet(nn.Module):
         enc_outputs_class = self.class_embed(output_memory)
         enc_outputs_coord_unact = self.bbox_embed(output_memory) + output_proposals
         enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
+        enc_outputs_mask = None
+        if self.mask_embed is not None:
+            enc_outputs_mask = self.mask_embed(output_memory)
+
         if self.has_dec:
             topk = self.num_proposals
             if self.eff_specific_head:
@@ -395,9 +413,9 @@ class RpnDefaultProposalNet(nn.Module):
                 query_embed = pos_trans_out
             else:
                 query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
-            return enc_outputs_class, enc_outputs_coord, reference_points, query_embed, tgt, enc_outputs_fg_class,None
+            return enc_outputs_class, enc_outputs_coord, enc_outputs_mask, reference_points, query_embed, tgt, enc_outputs_fg_class,None
         else:
-            return enc_outputs_class, enc_outputs_coord, None,None,None, None,None
+            return enc_outputs_class, enc_outputs_coord,enc_outputs_mask, None,None,None, None,None
 
 class RpnDefaultAssignProposalNet(nn.Module):
     def __init__(self, d_model=256, num_classes=91, num_proposals=300, 
@@ -1128,7 +1146,7 @@ class RetinaProposalNet(nn.Module):
 class FcosProposalNet(nn.Module):
     def __init__(self, d_model=256, num_classes=91, num_proposals=300,
                  eff_query_init=False, eff_specific_head=False,
-                 has_dec=True,
+                 has_dec=True,my_enc_loss=False, has_mask_pred=False,
                  num_feature_levels=4, strides = [8, 16, 32, 64],
                  # anchor param
                  ):
@@ -1158,6 +1176,12 @@ class FcosProposalNet(nn.Module):
 
         self.pos_trans = nn.Linear(d_model * 2, d_model * (1 if self.eff_query_init else 2))
         self.pos_trans_norm = nn.LayerNorm(d_model * (1 if self.eff_query_init else 2))
+
+
+        self.mask_embed = None
+        self.has_mask_pred = has_mask_pred
+        if has_mask_pred:
+            self.mask_embed = MaskPredictor(d_model, d_model)
     def _reset_parameters(self):
         for p in self.parameters():
             if p.dim() > 1:
@@ -1193,7 +1217,7 @@ class FcosProposalNet(nn.Module):
         N_, S_, C_ = memory.shape
         base_scale = 4.0
         proposals = []
-        memorys = []
+        output_memory = []
         outputs_class = []
         outputs_coord_unact = []
         _cur = 0
@@ -1223,6 +1247,7 @@ class FcosProposalNet(nn.Module):
             memory_lvl = memory[:, _cur:(_cur + H_ * W_), :].view(N_,H_,W_,C_).permute(0,3,1,2) # N C H W
             feat1 = self.share_tower(memory_lvl)
 
+            output_memory.append(feat1.flatten(2).permute(0,2,1))
             class_logits = self.cls_score(feat1) # N C H W
             pred_offset = self.bbox_pred(feat1) # N 4 H W
 
@@ -1245,12 +1270,18 @@ class FcosProposalNet(nn.Module):
         # output_proposals = torch.cat(proposals, 1)
         outputs_class = torch.cat(outputs_class, 1)
         outputs_coord_unact = torch.cat(outputs_coord_unact, 1)
-        return outputs_class, outputs_coord_unact
+        output_memory = torch.cat(output_memory,1)
+        return outputs_class, outputs_coord_unact, output_memory
 
     def forward(self, memory, mask_flatten, spatial_shapes,level_start_index,valid_ratios, targets=None):
         bs, _, c = memory.shape
-        enc_outputs_class, enc_outputs_coord_unact = self.gen_encoder_output_proposals(memory, mask_flatten, spatial_shapes)
+        enc_outputs_class, enc_outputs_coord_unact, output_memory = self.gen_encoder_output_proposals(memory, mask_flatten, spatial_shapes)
         enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
+
+        enc_outputs_mask = None
+        if self.mask_embed is not None:
+            enc_outputs_mask = self.mask_embed(output_memory)
+
         if self.has_dec:
             topk = self.num_proposals
             if self.eff_specific_head:
@@ -1275,9 +1306,9 @@ class FcosProposalNet(nn.Module):
                 query_embed = pos_trans_out
             else:
                 query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
-            return enc_outputs_class, enc_outputs_coord, reference_points, query_embed, tgt, enc_outputs_fg_class,None
+            return enc_outputs_class, enc_outputs_coord, enc_outputs_mask, reference_points, query_embed, tgt, enc_outputs_fg_class,None
         else:
-            return enc_outputs_class, enc_outputs_coord, None, None, None, None,None
+            return enc_outputs_class, enc_outputs_coord,enc_outputs_mask, None,None,None, None,None
 
 class MLP(nn.Module):
     """ Very simple multi-layer perceptron (also called FFN)"""
@@ -1293,6 +1324,30 @@ class MLP(nn.Module):
             x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
         return x
 
+class MaskPredictor(nn.Module):
+    def __init__(self, in_dim, h_dim):
+        super().__init__()
+        self.h_dim = h_dim
+        self.layer1 = nn.Sequential(
+            nn.LayerNorm(in_dim),
+            nn.Linear(in_dim, h_dim),
+            nn.GELU()
+        )
+        self.layer2 = nn.Sequential(
+            nn.Linear(h_dim, h_dim // 2),
+            nn.GELU(),
+            nn.Linear(h_dim // 2, h_dim // 4),
+            nn.GELU(),
+            nn.Linear(h_dim // 4, 1)
+        )
+    
+    def forward(self, x):
+        z = self.layer1(x)
+        z_local, z_global = torch.split(z, self.h_dim // 2, dim=-1)
+        z_global = z_global.mean(dim=1, keepdim=True).expand(-1, z_local.shape[1], -1)
+        z = torch.cat([z_local, z_global], dim=-1)
+        out = self.layer2(z)
+        return out
 
 def build_proposal_network(args):
     if args.dataset_file == 'coco':
@@ -1312,7 +1367,8 @@ def build_proposal_network(args):
             eff_query_init=args.eff_query_init,
             eff_specific_head=args.eff_specific_head,
             has_dec=has_dec,
-            my_enc_loss=args.my_enc_loss
+            my_enc_loss=args.my_enc_loss,
+            has_mask_pred=True if args.dense_aux_loss=='dam' else False,
         )
     elif args.proposal_net == 'rpn_default':
         logger.info(f'build rpn default proposal net')
@@ -1323,10 +1379,12 @@ def build_proposal_network(args):
             eff_query_init=args.eff_query_init,
             eff_specific_head=args.eff_specific_head,
             has_dec=has_dec,
-            my_enc_loss=args.my_enc_loss
+            my_enc_loss=args.my_enc_loss,
+            has_mask_pred=True if args.dense_aux_loss=='dam' else False,
         )
     elif args.proposal_net == 'rpn_default_assign':
-        logger.info(f'build rpn default proposal net')
+        logger.error(f'build rpn_default_assign, not IMPLEMENT YET!')
+        raise ValueError(f'build rpn_default_assign, not IMPLEMENT YET!')
         return RpnDefaultAssignProposalNet(
             d_model=args.hidden_dim,
             num_classes= 1 if args.agn_proposal else num_classes,
@@ -1370,7 +1428,8 @@ def build_proposal_network(args):
             eff_query_init=args.eff_query_init,
             eff_specific_head=args.eff_specific_head,
             has_dec=has_dec,
-            my_enc_loss=args.my_enc_loss
+            my_enc_loss=args.my_enc_loss,
+            has_mask_pred=True if args.dense_aux_loss=='dam' else False,
         )
     elif args.proposal_net == 'retina':
         # TODO
@@ -1383,5 +1442,6 @@ def build_proposal_network(args):
             eff_query_init=args.eff_query_init,
             eff_specific_head=args.eff_specific_head,
             has_dec=has_dec,
-            my_enc_loss=args.my_enc_loss
+            my_enc_loss=args.my_enc_loss,
+            has_mask_pred=True if args.dense_aux_loss=='dam' else False,
         )

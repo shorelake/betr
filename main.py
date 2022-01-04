@@ -246,8 +246,9 @@ def get_args_parser():
                         help="use my enc loss instead")  
 
     ## dense stage aux loss for one-to-many
-    parser.add_argument('--dense_aux_loss', default=False, action='store_true',
-                        help="use my enc loss instead")              
+    parser.add_argument('--dense_aux_loss', default=None, type=str,
+                        help="Name of the dense_aux_loss to use, now support None default, o2m, dam") #TODO    
+    parser.add_argument('--dense_aux_loss_coef', default=2, type=float)      
     return parser
 
 
