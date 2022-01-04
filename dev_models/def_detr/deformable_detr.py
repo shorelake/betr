@@ -22,7 +22,8 @@ from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
 
 # from .backbone import build_backbone as build_swin_backbone
 from dev_models.backbone_factory import build_backbone
-from dev_models.matcher import build_matcher, HungarianMatcher, build_dense_matcher
+from dev_models.matcher import (build_matcher, HungarianMatcher, build_dense_matcher, 
+                            build_dense_aux_matcher)
 from dev_models.segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
 from .deformable_transformer import build_deforamble_transformer
@@ -299,8 +300,8 @@ class SetCriterion(nn.Module):
         1) we compute hungarian assignment between ground truth boxes and the outputs of the model
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
-    def __init__(self, num_classes, matcher, enc_matcher, weight_dict, losses, eff_specific_head=False, focal_alpha=0.25,
-                 my_enc_loss=False):
+    def __init__(self, num_classes, matcher, enc_matcher, enc_aux_matcher, weight_dict, losses, eff_specific_head=False, 
+                 focal_alpha=0.25, my_enc_loss=False, dense_aux_loss=False):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -315,11 +316,13 @@ class SetCriterion(nn.Module):
         self.num_classes = num_classes
         self.matcher = matcher
         self.enc_matcher = enc_matcher
+        self.enc_aux_matcher = enc_aux_matcher
         self.weight_dict = weight_dict
         self.losses = losses
         self.focal_alpha = focal_alpha
         self.eff_specific_head = eff_specific_head
         self.my_enc_loss = my_enc_loss
+        self.dense_aux_loss = dense_aux_loss
 
     def loss_labels(self, outputs, targets, indices, num_boxes, log=True, enc_outputs=False):
         """Classification loss (NLL)
@@ -485,6 +488,8 @@ class SetCriterion(nn.Module):
                     for bt in bin_targets:
                         bt['labels'] = torch.zeros_like(bt['labels'])
                 indices = self.enc_matcher(enc_outputs, bin_targets)
+
+                # for normal indices loss
                 for loss in self.losses:
                     if loss == 'masks':
                         # Intermediate masks losses are too costly to compute, we ignore them.
@@ -497,7 +502,21 @@ class SetCriterion(nn.Module):
                     l_dict = self.get_loss(loss, enc_outputs, bin_targets, indices, num_boxes, **kwargs)
                     l_dict = {k + f'_enc': v for k, v in l_dict.items()}
                     losses.update(l_dict)
-
+                if self.dense_aux_loss:
+                    aux_indices = self.enc_aux_matcher(enc_outputs, bin_targets)
+                    # for aux indices loss
+                    # Compute the average number of foreground boxes accross all nodes, for normalization purposes
+                    aux_num_boxes = sum(len(aux_indice[1]) for aux_indice in aux_indices)
+                    aux_num_boxes = torch.as_tensor([aux_num_boxes], dtype=torch.float, device=next(iter(outputs.values())).device)
+                    if is_dist_avail_and_initialized():
+                        torch.distributed.all_reduce(aux_num_boxes)
+                    aux_num_boxes = torch.clamp(aux_num_boxes / get_world_size(), min=1).item()
+                    aux_kwargs = {}
+                    aux_kwargs['log'] = False
+                    aux_kwargs['enc_outputs'] = True
+                    aux_l_dict = self.loss_labels(enc_outputs, bin_targets, aux_indices, aux_num_boxes, **aux_kwargs)
+                    aux_l_dict = {k + f'_enc_aux': v for k, v in aux_l_dict.items()}
+                    losses.update(aux_l_dict)
         return losses
 
 
@@ -634,11 +653,14 @@ def build(args):
         model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))
     matcher = build_matcher(args)
     enc_matcher = None
+    enc_aux_matcher = None
     if args.two_stage:
         # enc_matcher = HungarianMatcher(cost_class=args.set_cost_class,
         #                     cost_bbox=args.set_cost_bbox,
         #                     cost_giou=args.set_cost_giou)
         enc_matcher = build_dense_matcher(args)
+        if args.dense_aux_loss:
+            enc_aux_matcher = build_dense_aux_matcher(args)
     weight_dict = {'loss_ce': args.cls_loss_coef, 'loss_bbox': args.bbox_loss_coef}
     weight_dict['loss_giou'] = args.giou_loss_coef
     if args.masks:
@@ -651,13 +673,16 @@ def build(args):
             aux_weight_dict.update({k + f'_{i}': v for k, v in weight_dict.items()})
         aux_weight_dict.update({k + f'_enc': v for k, v in weight_dict.items()})
         weight_dict.update(aux_weight_dict)
+    
+    if args.dense_aux_loss:
+        weight_dict['loss_ce_enc_aux'] = args.cls_loss_coef
 
     losses = ['labels', 'boxes', 'cardinality']
     if args.masks:
         losses += ["masks"]
     # num_classes, matcher, weight_dict, losses, focal_alpha=0.25
-    criterion = SetCriterion(num_classes, matcher, enc_matcher, weight_dict, losses, eff_specific_head=args.eff_specific_head, 
-                             focal_alpha=args.focal_alpha, my_enc_loss = args.my_enc_loss)
+    criterion = SetCriterion(num_classes, matcher, enc_matcher,enc_aux_matcher, weight_dict, losses, eff_specific_head=args.eff_specific_head, 
+                             focal_alpha=args.focal_alpha, my_enc_loss=args.my_enc_loss, dense_aux_loss=args.dense_aux_loss)
     
   
     

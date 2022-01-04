@@ -243,7 +243,11 @@ def get_args_parser():
 
     ## proposal network loss
     parser.add_argument('--my_enc_loss', default=False, action='store_true',
-                        help="use my enc loss instead")           
+                        help="use my enc loss instead")  
+
+    ## dense stage aux loss for one-to-many
+    parser.add_argument('--dense_aux_loss', default=False, action='store_true',
+                        help="use my enc loss instead")              
     return parser
 
 
