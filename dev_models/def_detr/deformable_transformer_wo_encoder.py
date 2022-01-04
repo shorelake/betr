@@ -180,6 +180,7 @@ class DeformableTransformer(nn.Module):
         # prepare input for decoder
         ret_spatial_shapes = spatial_shapes
         bs, _, c = memory.shape
+        enc_outputs_fg_class = None
         enc_outputs_class = None
         enc_outputs_mask = None
         if self.two_stage:
