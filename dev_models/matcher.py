@@ -318,11 +318,16 @@ class SpatialPriorHungarianMatcher(nn.Module):
             cost_bbox = torch.cdist(out_bbox, tgt_bbox, p=1)
 
             # Compute the giou cost betwen boxes
-            cost_giou = -generalized_box_iou(box_cxcywh_to_xyxy(out_bbox),
+            # cost_giou = -generalized_box_iou(box_cxcywh_to_xyxy(out_bbox),
+            #                                  box_cxcywh_to_xyxy(tgt_bbox))
+            cost_giou = 1-generalized_box_iou(box_cxcywh_to_xyxy(out_bbox),
                                              box_cxcywh_to_xyxy(tgt_bbox))
 
+            cost_cls = self.cost_class * cost_class
+            cost_loc = self.cost_bbox * cost_bbox + self.cost_giou * cost_giou
             # Final cost matrix
-            C = self.cost_bbox * cost_bbox + self.cost_class * cost_class + self.cost_giou * cost_giou
+            C = cost_cls + cost_loc
+            # C = cost_cls * cost_loc
             C = C.view(bs, num_queries, -1)
 
             # get spatial prior
@@ -586,11 +591,11 @@ def build_matcher(args):
                             cost_giou=args.set_cost_giou)
 
 def build_dense_matcher(args):
-    return SpatialPriorHungarianMatcher(cost_class=args.set_cost_class,
-                            cost_bbox=args.set_cost_bbox,
-                            cost_giou=args.set_cost_giou)
+    return SpatialPriorHungarianMatcher(cost_class=args.dense_set_cost_class,
+                            cost_bbox=args.dense_set_cost_bbox,
+                            cost_giou=args.dense_set_cost_giou)
 
 def build_dense_aux_matcher(args):
-    return DenseAuxMatcher(cost_class=args.set_cost_class,
-                            cost_bbox=args.set_cost_bbox,
-                            cost_giou=args.set_cost_giou)
+    return DenseAuxMatcher(cost_class=args.dense_set_cost_class,
+                            cost_bbox=args.dense_set_cost_bbox,
+                            cost_giou=args.dense_set_cost_giou)

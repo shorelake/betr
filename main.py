@@ -245,6 +245,17 @@ def get_args_parser():
     parser.add_argument('--my_enc_loss', default=False, action='store_true',
                         help="use my enc loss instead")  
 
+    # * dense Matcher
+    parser.add_argument('--dense_set_cost_class', default=2, type=float,
+                        help="Class coefficient in the matching cost")
+    parser.add_argument('--dense_set_cost_bbox', default=5, type=float,
+                        help="L1 box coefficient in the matching cost")
+    parser.add_argument('--dense_set_cost_giou', default=2, type=float,
+                        help="giou box coefficient in the matching cost")
+    # * dense part losscoef
+    parser.add_argument('--dense_cls_loss_coef', default=2, type=float)
+    parser.add_argument('--dense_bbox_loss_coef', default=5, type=float)
+    parser.add_argument('--dense_giou_loss_coef', default=2, type=float)
     ## dense stage aux loss for one-to-many
     parser.add_argument('--dense_aux_loss', default=None, type=str,
                         help="Name of the dense_aux_loss to use, now support None default, o2m, dam") #TODO    

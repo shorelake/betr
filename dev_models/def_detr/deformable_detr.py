@@ -733,7 +733,10 @@ def build(args):
         aux_weight_dict = {}
         for i in range(args.dec_layers - 1):
             aux_weight_dict.update({k + f'_{i}': v for k, v in weight_dict.items()})
-        aux_weight_dict.update({k + f'_enc': v for k, v in weight_dict.items()})
+        dense_weight_dict = {'loss_ce_enc': args.dense_cls_loss_coef, 'loss_bbox_enc': args.dense_bbox_loss_coef,
+                             'loss_giou_enc': args.dense_giou_loss_coef}
+        # aux_weight_dict.update({k + f'_enc': v for k, v in weight_dict.items()})
+        aux_weight_dict.update(dense_weight_dict)
         weight_dict.update(aux_weight_dict)
     
     if args.dense_aux_loss is not None:
