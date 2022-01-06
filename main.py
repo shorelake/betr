@@ -243,7 +243,11 @@ def get_args_parser():
 
     ## proposal network loss
     parser.add_argument('--my_enc_loss', default=False, action='store_true',
-                        help="use my enc loss instead")  
+                        help="use my enc loss instead")
+    
+    ## proposal network filter branch
+    parser.add_argument('--proposal_filter', default=False, action='store_true',
+                        help="True to add extra filter branch for proposal net")  
 
     # * dense Matcher
     parser.add_argument('--dense_set_cost_class', default=2, type=float,
@@ -256,6 +260,12 @@ def get_args_parser():
     parser.add_argument('--dense_cls_loss_coef', default=2, type=float)
     parser.add_argument('--dense_bbox_loss_coef', default=5, type=float)
     parser.add_argument('--dense_giou_loss_coef', default=2, type=float)
+
+    # * dense part kd from dec loss
+    parser.add_argument('--kd_from_dec', default=False, action='store_true',
+                        help="use final dec layer logit kd enc logits")
+    parser.add_argument('--dense_kd_loss_coef', default=2, type=float)
+    
     ## dense stage aux loss for one-to-many
     parser.add_argument('--dense_aux_loss', default=None, type=str,
                         help="Name of the dense_aux_loss to use, now support None default, o2m, dam") #TODO    

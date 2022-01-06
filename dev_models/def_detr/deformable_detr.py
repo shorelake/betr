@@ -313,7 +313,7 @@ class SetCriterion(nn.Module):
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
     def __init__(self, num_classes, matcher, enc_matcher, enc_aux_matcher, weight_dict, losses, eff_specific_head=False, 
-                 focal_alpha=0.25, my_enc_loss=False, dense_aux_loss=None):
+                 focal_alpha=0.25, my_enc_loss=False, dense_aux_loss=None, kd_from_dec=False):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -335,6 +335,7 @@ class SetCriterion(nn.Module):
         self.eff_specific_head = eff_specific_head
         self.my_enc_loss = my_enc_loss
         self.dense_aux_loss = dense_aux_loss
+        self.kd_from_dec = kd_from_dec
 
     def loss_labels(self, outputs, targets, indices, num_boxes, log=True, enc_outputs=False, dense_loss=False):
         """Classification loss (NLL)
@@ -472,6 +473,29 @@ class SetCriterion(nn.Module):
 
         return losses
 
+    def loss_kd_from_dec(self, enc_outputs, outputs):
+        assert "topk_proposal" in enc_outputs
+        assert "pred_logits" in enc_outputs
+        assert "pred_filters" in enc_outputs
+        topk_proposal = enc_outputs['topk_proposal']
+        enc_logits = enc_outputs['pred_logits']
+        enc_filters = enc_outputs['pred_filters']
+        if enc_filters is not None:
+            enc_cls = enc_logits.sigmoid() * enc_filters.sigmoid()
+        else:
+            enc_cls = enc_logits.sigmoid()
+
+        enc_topk_cls = torch.gather(enc_cls,1,topk_proposal.unsqueeze(-1).repeat(1,1,enc_cls.size(-1)))
+        # enc_topk_logits = inverse_sigmoid(enc_topk_cls)
+
+        pred_cls=outputs['pred_logits'].sigmoid().detach()
+
+        loss_module = nn.BCELoss()
+
+
+        losses = {"loss_dec_kd": loss_module(enc_topk_cls, pred_cls)}
+
+        return losses
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
         batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])
@@ -553,15 +577,16 @@ class SetCriterion(nn.Module):
                         # Logging is enabled only for the last layer
                         kwargs['log'] = False
                         kwargs['enc_outputs'] = True
-                        kwargs['dense_loss'] = True
+                        if enc_outputs['pred_filters'] is not None:
+                            kwargs['dense_loss'] = True
                     l_dict = self.get_loss(loss, enc_outputs, bin_targets, indices, num_boxes, **kwargs)
                     l_dict = {k + f'_enc': v for k, v in l_dict.items()}
                     losses.update(l_dict)
-                # import pdb;pdb.set_trace()
-                # topk_proposal = enc_outputs['topk_proposal']
-                # topk_logits = torch.gather(enc_outputs['pred_logits'],1,topk_proposal.unsqueeze(-1).repeat(1,1,enc_outputs['pred_logits'].size(-1)))
-                # pred_logits=outputs['pred_logits']
-                # import pdb;pdb.set_trace()
+                if self.kd_from_dec:
+                    kd_l_dict = self.loss_kd_from_dec(enc_outputs, outputs)
+                    kd_l_dict = {k + f'_enc': v for k, v in kd_l_dict.items()}
+                    losses.update(kd_l_dict)
+
                 if self.dense_aux_loss is not None:
                     if self.enc_aux_matcher is not None:
                         aux_indices = self.enc_aux_matcher(enc_outputs, bin_targets)
@@ -757,13 +782,16 @@ def build(args):
             weight_dict['loss_ce_enc_aux'] = args.dense_aux_loss_coef
         elif args.dense_aux_loss == 'dam':
             weight_dict['loss_mask_pred_enc_aux'] = args.dense_aux_loss_coef
+    if args.kd_from_dec:
+        weight_dict['loss_dec_kd_enc'] = args.dense_kd_loss_coef
 
     losses = ['labels', 'boxes', 'cardinality']
     if args.masks:
         losses += ["masks"]
     # num_classes, matcher, weight_dict, losses, focal_alpha=0.25
     criterion = SetCriterion(num_classes, matcher, enc_matcher,enc_aux_matcher, weight_dict, losses, eff_specific_head=args.eff_specific_head, 
-                             focal_alpha=args.focal_alpha, my_enc_loss=args.my_enc_loss, dense_aux_loss=args.dense_aux_loss)
+                             focal_alpha=args.focal_alpha, my_enc_loss=args.my_enc_loss, dense_aux_loss=args.dense_aux_loss,
+                             kd_from_dec=args.kd_from_dec)
     
   
     

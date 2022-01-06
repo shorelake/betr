@@ -274,12 +274,13 @@ class DefaultProposalNet(nn.Module):
                     reference_points, query_embed, tgt, enc_outputs_fg_class,None, topk_proposals)
         else:
             return (enc_outputs_class, enc_outputs_coord,enc_outputs_mask, 
-                    None,None,None, None,None, topk_proposals)
+                    None,None,None, None,None, None)
 
 class RpnDefaultProposalNet(nn.Module):
     def __init__(self, d_model=256, num_classes=91, num_proposals=300, 
                  eff_query_init=False, eff_specific_head=False,
-                 has_dec=True, my_enc_loss=False, has_mask_pred=False):
+                 has_dec=True, my_enc_loss=False, has_mask_pred=False,
+                 proposal_filter=False):
         super().__init__()
         self.my_enc_loss=my_enc_loss
         self.has_dec=has_dec
@@ -303,7 +304,9 @@ class RpnDefaultProposalNet(nn.Module):
 
         self.class_embed = nn.Linear(d_model, num_classes)
         self.bbox_embed = MLP(d_model, d_model, 4, 3)
-        self.filter = MaskPredictor(d_model, d_model)
+        self.filter = None
+        if proposal_filter:
+            self.filter = MaskPredictor(d_model, d_model)
 
         self.mask_embed = None
         self.has_mask_pred = has_mask_pred
@@ -389,7 +392,9 @@ class RpnDefaultProposalNet(nn.Module):
         enc_outputs_class = self.class_embed(output_memory)
         enc_outputs_coord_unact = self.bbox_embed(output_memory) + output_proposals
         enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
-        enc_outputs_filter = self.filter(output_memory)
+        enc_outputs_filter = None
+        if self.filter is not None:
+            enc_outputs_filter = self.filter(output_memory)
         enc_outputs_mask = None
         if self.mask_embed is not None:
             enc_outputs_mask = self.mask_embed(output_memory)
@@ -398,12 +403,18 @@ class RpnDefaultProposalNet(nn.Module):
             topk = self.num_proposals
             if self.eff_specific_head:
                 # take the best score for judging objectness with class specific head
-                filtered_enc_outputs_class = enc_outputs_class.sigmoid() * enc_outputs_filter.sigmoid()
+                if enc_outputs_filter is not None:
+                    filtered_enc_outputs_class = enc_outputs_class.sigmoid() * enc_outputs_filter.sigmoid()
+                else:
+                    filtered_enc_outputs_class = enc_outputs_class
                 enc_outputs_fg_class = filtered_enc_outputs_class.topk(1, dim=2).values[... , 0]
             else:
                 # take the score from the binary(fore/background) classfier 
                 # though outputs have 91 output dim, the 1st dim. alone will be used for the loss computation.
-                filtered_enc_outputs_class = enc_outputs_class.sigmoid() * enc_outputs_filter.sigmoid()
+                if enc_outputs_filter is not None:
+                    filtered_enc_outputs_class = enc_outputs_class.sigmoid() * enc_outputs_filter.sigmoid()
+                else:
+                    filtered_enc_outputs_class = enc_outputs_class
                 enc_outputs_fg_class = filtered_enc_outputs_class[..., 0]
 
             topk_proposals = torch.topk(enc_outputs_fg_class, topk, dim=1)[1]
@@ -1391,6 +1402,7 @@ def build_proposal_network(args):
             has_dec=has_dec,
             my_enc_loss=args.my_enc_loss,
             has_mask_pred=True if args.dense_aux_loss=='dam' else False,
+            proposal_filter=args.proposal_filter
         )
     elif args.proposal_net == 'rpn_default_assign':
         logger.error(f'build rpn_default_assign, not IMPLEMENT YET!')
