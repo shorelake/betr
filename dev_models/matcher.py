@@ -301,6 +301,8 @@ class SpatialPriorHungarianMatcher(nn.Module):
 
             # We flatten to compute the cost matrices in a batch
             out_prob = outputs["pred_logits"].flatten(0, 1).sigmoid()
+            out_filter = outputs['pred_filters'].flatten(0, 1).sigmoid()
+            out_prob = out_prob * out_filter
             out_bbox = outputs["pred_boxes"].flatten(0, 1)  # [batch_size * num_queries, 4]
 
             # Also concat the target labels and boxes

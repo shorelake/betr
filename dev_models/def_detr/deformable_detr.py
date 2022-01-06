@@ -20,6 +20,7 @@ from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
                        accuracy, get_world_size, interpolate,
                        is_dist_avail_and_initialized, inverse_sigmoid)
 from util.dam import attn_map_to_flat_grid
+from util.distillation import knowledge_distillation_kl_div_loss
 # from .backbone import build_backbone as build_swin_backbone
 from dev_models.backbone_factory import build_backbone
 from dev_models.matcher import (build_matcher, HungarianMatcher, build_dense_matcher, 
@@ -221,12 +222,14 @@ class DeformableDETR(nn.Module):
         if not self.init_query_from_backbone:
             (hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord, enc_outputs_mask, 
              enc_loss, spatial_shapes,
-             level_start_index, sampling_locations_dec, attn_weights_dec, mask_flatten) = \
+             level_start_index, sampling_locations_dec, attn_weights_dec, mask_flatten, topk_proposal,
+             enc_outputs_filter) = \
                 self.transformer(srcs, masks, pos, query_embeds, targets=targets)
         else:
             (hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord, enc_outputs_mask,
              enc_loss, spatial_shapes,
-             level_start_index, sampling_locations_dec, attn_weights_dec, mask_flatten) = \
+             level_start_index, sampling_locations_dec, attn_weights_dec, mask_flatten, topk_proposal,
+             enc_outputs_filter) = \
                 self.transformer(srcs, masks, pos, query_embed=det_pos, tgt=det_tokens, targets=targets)
         if self.has_dec:
             outputs_classes = []
@@ -275,10 +278,11 @@ class DeformableDETR(nn.Module):
 
             if self.two_stage:
                 # enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
-                out['enc_outputs'] = {'pred_logits': enc_outputs_class, 'pred_boxes': enc_outputs_coord, 'spatial_shapes': spatial_shapes,
+                out['enc_outputs'] = {'pred_logits': enc_outputs_class, 'pred_boxes': enc_outputs_coord, 
+                                      'pred_filters': enc_outputs_filter,'spatial_shapes': spatial_shapes,
                                       'strides':self.strides, 'pred_mask':enc_outputs_mask, 'sampling_locations_dec': sampling_locations_dec,
                                       'attn_weights_dec': attn_weights_dec, 'level_start_index':level_start_index,
-                                       'mask_flatten': mask_flatten}
+                                       'mask_flatten': mask_flatten, 'topk_proposal': topk_proposal}
             
         else:
             # enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
@@ -332,12 +336,15 @@ class SetCriterion(nn.Module):
         self.my_enc_loss = my_enc_loss
         self.dense_aux_loss = dense_aux_loss
 
-    def loss_labels(self, outputs, targets, indices, num_boxes, log=True, enc_outputs=False):
+    def loss_labels(self, outputs, targets, indices, num_boxes, log=True, enc_outputs=False, dense_loss=False):
         """Classification loss (NLL)
         targets dicts must contain the key "labels" containing a tensor of dim [nb_target_boxes]
         """
         assert 'pred_logits' in outputs
         src_logits = outputs['pred_logits']
+        if dense_loss:
+            filters = outputs['pred_filters']
+            src_logits = src_logits.sigmoid() * filters.sigmoid()
 
         idx = self._get_src_permutation_idx(indices)
         target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
@@ -354,7 +361,7 @@ class SetCriterion(nn.Module):
         target_classes_onehot.scatter_(2, target_classes.unsqueeze(-1), 1)
 
         target_classes_onehot = target_classes_onehot[:,:,:-1]
-        loss_ce = sigmoid_focal_loss(src_logits, target_classes_onehot, num_boxes, alpha=self.focal_alpha, gamma=2) * src_logits.shape[1]
+        loss_ce = sigmoid_focal_loss(src_logits, target_classes_onehot, num_boxes, alpha=self.focal_alpha, gamma=2, dense_loss=dense_loss) * src_logits.shape[1]
         losses = {'loss_ce': loss_ce}
 
         if log:
@@ -546,9 +553,15 @@ class SetCriterion(nn.Module):
                         # Logging is enabled only for the last layer
                         kwargs['log'] = False
                         kwargs['enc_outputs'] = True
+                        kwargs['dense_loss'] = True
                     l_dict = self.get_loss(loss, enc_outputs, bin_targets, indices, num_boxes, **kwargs)
                     l_dict = {k + f'_enc': v for k, v in l_dict.items()}
                     losses.update(l_dict)
+                # import pdb;pdb.set_trace()
+                # topk_proposal = enc_outputs['topk_proposal']
+                # topk_logits = torch.gather(enc_outputs['pred_logits'],1,topk_proposal.unsqueeze(-1).repeat(1,1,enc_outputs['pred_logits'].size(-1)))
+                # pred_logits=outputs['pred_logits']
+                # import pdb;pdb.set_trace()
                 if self.dense_aux_loss is not None:
                     if self.enc_aux_matcher is not None:
                         aux_indices = self.enc_aux_matcher(enc_outputs, bin_targets)

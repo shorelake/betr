@@ -270,9 +270,11 @@ class DefaultProposalNet(nn.Module):
                 query_embed = pos_trans_out
             else:
                 query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
-            return enc_outputs_class, enc_outputs_coord, enc_outputs_mask, reference_points, query_embed, tgt, enc_outputs_fg_class,None
+            return (enc_outputs_class, enc_outputs_coord, enc_outputs_mask, 
+                    reference_points, query_embed, tgt, enc_outputs_fg_class,None, topk_proposals)
         else:
-            return enc_outputs_class, enc_outputs_coord,enc_outputs_mask, None,None,None, None,None
+            return (enc_outputs_class, enc_outputs_coord,enc_outputs_mask, 
+                    None,None,None, None,None, topk_proposals)
 
 class RpnDefaultProposalNet(nn.Module):
     def __init__(self, d_model=256, num_classes=91, num_proposals=300, 
@@ -301,6 +303,7 @@ class RpnDefaultProposalNet(nn.Module):
 
         self.class_embed = nn.Linear(d_model, num_classes)
         self.bbox_embed = MLP(d_model, d_model, 4, 3)
+        self.filter = MaskPredictor(d_model, d_model)
 
         self.mask_embed = None
         self.has_mask_pred = has_mask_pred
@@ -386,6 +389,7 @@ class RpnDefaultProposalNet(nn.Module):
         enc_outputs_class = self.class_embed(output_memory)
         enc_outputs_coord_unact = self.bbox_embed(output_memory) + output_proposals
         enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
+        enc_outputs_filter = self.filter(output_memory)
         enc_outputs_mask = None
         if self.mask_embed is not None:
             enc_outputs_mask = self.mask_embed(output_memory)
@@ -413,9 +417,11 @@ class RpnDefaultProposalNet(nn.Module):
                 query_embed = pos_trans_out
             else:
                 query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
-            return enc_outputs_class, enc_outputs_coord, enc_outputs_mask, reference_points, query_embed, tgt, enc_outputs_fg_class,None
+            return (enc_outputs_class, enc_outputs_coord, enc_outputs_mask, 
+                    reference_points, query_embed, tgt, enc_outputs_fg_class,None, topk_proposals, enc_outputs_filter)
         else:
-            return enc_outputs_class, enc_outputs_coord,enc_outputs_mask, None,None,None, None,None
+            return (enc_outputs_class, enc_outputs_coord,enc_outputs_mask,
+                    None,None,None, None,None, None, None)
 
 class RpnDefaultAssignProposalNet(nn.Module):
     def __init__(self, d_model=256, num_classes=91, num_proposals=300, 
@@ -1306,9 +1312,11 @@ class FcosProposalNet(nn.Module):
                 query_embed = pos_trans_out
             else:
                 query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
-            return enc_outputs_class, enc_outputs_coord, enc_outputs_mask, reference_points, query_embed, tgt, enc_outputs_fg_class,None
+            return (enc_outputs_class, enc_outputs_coord, enc_outputs_mask, 
+                    reference_points, query_embed, tgt, enc_outputs_fg_class,None, topk_proposals)
         else:
-            return enc_outputs_class, enc_outputs_coord,enc_outputs_mask, None,None,None, None,None
+            return (enc_outputs_class, enc_outputs_coord,enc_outputs_mask, 
+                    None,None,None, None,None, None)
 
 class MLP(nn.Module):
     """ Very simple multi-layer perceptron (also called FFN)"""
