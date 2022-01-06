@@ -398,11 +398,13 @@ class RpnDefaultProposalNet(nn.Module):
             topk = self.num_proposals
             if self.eff_specific_head:
                 # take the best score for judging objectness with class specific head
-                enc_outputs_fg_class = enc_outputs_class.topk(1, dim=2).values[... , 0]
+                filtered_enc_outputs_class = enc_outputs_class.sigmoid() * enc_outputs_filter.sigmoid()
+                enc_outputs_fg_class = filtered_enc_outputs_class.topk(1, dim=2).values[... , 0]
             else:
                 # take the score from the binary(fore/background) classfier 
                 # though outputs have 91 output dim, the 1st dim. alone will be used for the loss computation.
-                enc_outputs_fg_class = enc_outputs_class[..., 0]
+                filtered_enc_outputs_class = enc_outputs_class.sigmoid() * enc_outputs_filter.sigmoid()
+                enc_outputs_fg_class = filtered_enc_outputs_class[..., 0]
 
             topk_proposals = torch.topk(enc_outputs_fg_class, topk, dim=1)[1]
             topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
