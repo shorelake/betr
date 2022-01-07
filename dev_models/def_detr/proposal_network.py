@@ -404,7 +404,8 @@ class RpnDefaultProposalNet(nn.Module):
             if self.eff_specific_head:
                 # take the best score for judging objectness with class specific head
                 if enc_outputs_filter is not None:
-                    filtered_enc_outputs_class = enc_outputs_class.sigmoid() * enc_outputs_filter.sigmoid()
+                    # filtered_enc_outputs_class = enc_outputs_class.sigmoid() * enc_outputs_filter.sigmoid()
+                    filtered_enc_outputs_class = enc_outputs_filter
                 else:
                     filtered_enc_outputs_class = enc_outputs_class
                 enc_outputs_fg_class = filtered_enc_outputs_class.topk(1, dim=2).values[... , 0]
@@ -412,7 +413,8 @@ class RpnDefaultProposalNet(nn.Module):
                 # take the score from the binary(fore/background) classfier 
                 # though outputs have 91 output dim, the 1st dim. alone will be used for the loss computation.
                 if enc_outputs_filter is not None:
-                    filtered_enc_outputs_class = enc_outputs_class.sigmoid() * enc_outputs_filter.sigmoid()
+                    # filtered_enc_outputs_class = enc_outputs_class.sigmoid() * enc_outputs_filter.sigmoid()
+                    filtered_enc_outputs_class = enc_outputs_filter
                 else:
                     filtered_enc_outputs_class = enc_outputs_class
                 enc_outputs_fg_class = filtered_enc_outputs_class[..., 0]
