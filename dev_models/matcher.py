@@ -479,6 +479,9 @@ class DenseAuxMatcher(nn.Module):
 
             # We flatten to compute the cost matrices in a batch
             out_prob = outputs["pred_logits"].sigmoid() #[batch_size, num_queries, cls]
+            if outputs['pred_filters'] is not None:
+                out_filter = outputs['pred_filters'].sigmoid()
+                out_prob = out_prob * out_filter
             out_bbox = outputs["pred_boxes"]  # [batch_size, num_queries, 4]
 
             indices = []
@@ -536,7 +539,7 @@ class DenseAuxMatcher(nn.Module):
                                 candidate_cost.std(dim=0, keepdim=True)
                     is_foreground = torch.zeros_like(is_in_boxes).scatter_(0, candidate_idxs, True)
                     is_foreground &= C <= cost_thr
-
+                    import pdb;pdb.set_trace()
                     C[~is_in_boxes] = INF
                     C[~is_foreground] = INF
 

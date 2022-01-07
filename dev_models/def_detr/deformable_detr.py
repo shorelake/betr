@@ -496,6 +496,22 @@ class SetCriterion(nn.Module):
         losses = {"loss_dec_kd": loss_module(enc_topk_cls, pred_cls)}
 
         return losses
+    def loss_ious(self, outputs, targets, indices, num_boxes, log=True, enc_outputs=False, dense_loss=False):
+        assert outputs['pred_filters'] is not None
+        idx = self._get_src_permutation_idx(indices)
+        src_ious = outputs['pred_filters'][idx]
+        src_ious = src_ious.squeeze(1)
+        src_boxes = outputs['pred_boxes'][idx]
+        target_boxes = torch.cat([t['boxes'][i] for t, (_, i) in zip(targets, indices)], dim=0)
+        iou = torch.diag(box_ops.box_iou(
+            box_ops.box_cxcywh_to_xyxy(src_boxes),
+            box_ops.box_cxcywh_to_xyxy(target_boxes))[0])
+
+        losses = {}
+        loss_iouaware = F.binary_cross_entropy_with_logits(src_ious, iou, reduction='none')
+        losses['loss_iouaware'] = loss_iouaware.sum() / num_boxes
+        return losses
+
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
         batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])
@@ -601,6 +617,9 @@ class SetCriterion(nn.Module):
                         aux_kwargs['log'] = False
                         aux_kwargs['enc_outputs'] = True
                         aux_l_dict = self.loss_labels(enc_outputs, bin_targets, aux_indices, aux_num_boxes, **aux_kwargs)
+                        aux_l_dict = {k + f'_enc_aux': v for k, v in aux_l_dict.items()}
+                        import pdb;pdb.set_trace()
+                        aux_l_dict = self.loss_ious(enc_outputs, bin_targets, aux_indices, aux_num_boxes, **aux_kwargs)
                         aux_l_dict = {k + f'_enc_aux': v for k, v in aux_l_dict.items()}
                         losses.update(aux_l_dict)
                     else:
