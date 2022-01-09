@@ -494,7 +494,6 @@ class DenseAuxMatcherV0(nn.Module):
                 if len(tgt_ids) == 0:
                     indices.append((torch.as_tensor([],dtype=torch.int64), torch.as_tensor([],dtype=torch.int64)))
                     gt_ious.append(torch.zeros([num_queries],device=bbox_per_image.device))
-                    import pdb;pdb.set_trace()
                     continue
                 else:
                     # Compute the classification cost.
@@ -546,7 +545,6 @@ class DenseAuxMatcherV0(nn.Module):
                                 candidate_cost.std(dim=0, keepdim=True)
                     is_foreground = torch.zeros_like(is_in_boxes).scatter_(0, candidate_idxs, True)
                     is_foreground &= C <= cost_thr
-                    import pdb;pdb.set_trace()
                     C[~is_in_boxes] = INF
                     C[~is_foreground] = INF
 
@@ -561,7 +559,7 @@ class DenseAuxMatcherV0(nn.Module):
                                     torch.as_tensor(gt_idx.cpu(),dtype=torch.int64)))
 
 
-            gt_ious = torch.stack(gt_iou,dim=0)
+            gt_ious = torch.stack(gt_ious,dim=0)
             return indices, gt_ious
 
     def grid_shifts(self, grid_sizes, strides, device):
@@ -728,6 +726,9 @@ def build_dense_matcher(args):
                             cost_giou=args.dense_set_cost_giou)
 
 def build_dense_aux_matcher(args):
-    return DenseAuxMatcherV1(cost_class=args.dense_set_cost_class,
+    # return DenseAuxMatcherV1(cost_class=args.dense_set_cost_class,
+    #                         cost_bbox=args.dense_set_cost_bbox,
+    #                         cost_giou=args.dense_set_cost_giou)
+    return DenseAuxMatcherV0(cost_class=args.dense_set_cost_class,
                             cost_bbox=args.dense_set_cost_bbox,
                             cost_giou=args.dense_set_cost_giou)

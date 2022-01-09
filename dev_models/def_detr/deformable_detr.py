@@ -616,17 +616,18 @@ class SetCriterion(nn.Module):
                         aux_indices, aux_gt_ious = self.enc_aux_matcher(enc_outputs, bin_targets)
                         # for aux indices loss
                         # Compute the average number of foreground boxes accross all nodes, for normalization purposes
-                        # aux_num_boxes = sum(len(aux_indice[1]) for aux_indice in aux_indices)
-                        # aux_num_boxes = torch.as_tensor([aux_num_boxes], dtype=torch.float, device=next(iter(outputs.values())).device)
-                        # if is_dist_avail_and_initialized():
-                        #     torch.distributed.all_reduce(aux_num_boxes)
-                        # aux_num_boxes = torch.clamp(aux_num_boxes / get_world_size(), min=1).item()
-                        # aux_kwargs = {}
-                        # aux_kwargs['log'] = False
-                        # aux_kwargs['enc_outputs'] = True
-                        # aux_l_dict = self.loss_labels(enc_outputs, bin_targets, aux_indices, aux_num_boxes, **aux_kwargs)
-                        # aux_l_dict = {k + f'_enc_aux': v for k, v in aux_l_dict.items()}
-
+                        aux_num_boxes = sum(len(aux_indice[1]) for aux_indice in aux_indices)
+                        aux_num_boxes = torch.as_tensor([aux_num_boxes], dtype=torch.float, device=next(iter(outputs.values())).device)
+                        if is_dist_avail_and_initialized():
+                            torch.distributed.all_reduce(aux_num_boxes)
+                        aux_num_boxes = torch.clamp(aux_num_boxes / get_world_size(), min=1).item()
+                        aux_kwargs = {}
+                        aux_kwargs['log'] = False
+                        aux_kwargs['enc_outputs'] = True
+                        aux_l_dict = self.loss_labels(enc_outputs, bin_targets, aux_indices, aux_num_boxes, **aux_kwargs)
+                        aux_l_dict = {k + f'_enc_aux': v for k, v in aux_l_dict.items()}
+                        losses.update(aux_l_dict)
+                        # import pdb;pdb.set_trace()
                         # aux_l_dict = self.loss_ious(enc_outputs, bin_targets, aux_indices, aux_num_boxes, **aux_kwargs)
                         num_fg = (aux_gt_ious>0).sum()
                         num_fg = torch.as_tensor([num_fg], dtype=torch.float, device=next(iter(outputs.values())).device)
@@ -812,7 +813,7 @@ def build(args):
     
     if args.dense_aux_loss is not None:
         if args.dense_aux_loss == 'o2m':
-            # weight_dict['loss_o2miou_enc_aux'] = args.dense_aux_loss_coef
+            weight_dict['loss_o2miou_enc_aux'] = args.dense_aux_loss_coef
             weight_dict['loss_ce_enc_aux'] = args.dense_aux_loss_coef
         elif args.dense_aux_loss == 'dam':
             weight_dict['loss_mask_pred_enc_aux'] = args.dense_aux_loss_coef
