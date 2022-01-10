@@ -120,40 +120,6 @@ class ConvertCocoPolysToMask(object):
         target["size"] = torch.as_tensor([int(h), int(w)])
 
         return image, target
-def make_rt_coco_transforms(image_set):
-    # realtime data aug setting
-    normalize = T.Compose([
-        T.ToTensor(),
-        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    ])
-
-    # scales = [480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800]
-    scales = [256, 288, 320, 352, 384, 416, 448, 480, 512, 544, 576, 608]
-
-    if image_set == 'train':
-        return T.Compose([
-            T.RandomHorizontalFlip(),
-            T.RandomSelect(
-                T.RandomResize(scales, max_size=900),
-                T.Compose([
-                    # T.RandomResize([400, 500, 600]),
-                    T.RandomResize([200, 300, 400]),
-                    # T.RandomSizeCrop(384, 600),
-                    T.RandomSizeCrop(180, 400),
-                    # T.RandomResize(scales, max_size=1333),
-                    T.RandomResize(scales, max_size=900),
-                ])
-            ),
-            normalize,
-        ])
-
-    if image_set == 'val':
-        return T.Compose([
-            T.RandomResize([512], max_size=736),
-            normalize,
-        ])
-    logger.error(f'unknown {image_set}')
-    raise ValueError(f'unknown {image_set}')
 
 
 def make_coco_transforms(image_set):
@@ -199,10 +165,6 @@ def build(image_set, args):
     }
 
     img_folder, ann_file = PATHS[image_set]
-    if args.real_time:
-        transforms = make_rt_coco_transforms(image_set)
-    else:
-        transforms = make_coco_transforms(image_set)
-    dataset = CocoDetection(img_folder, ann_file, transforms=transforms, return_masks=args.masks,
+    dataset = CocoDetection(img_folder, ann_file, transforms=make_coco_transforms(image_set), return_masks=args.masks,
                             cache_mode=args.cache_mode, local_rank=get_local_rank(), local_size=get_local_size())
     return dataset

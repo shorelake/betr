@@ -24,7 +24,7 @@ from .attention import MultiheadAttention
 from loguru import logger
 
 class DeformableTransformer(nn.Module):
-    def __init__(self, proposal, d_model=256, nhead=8,
+    def __init__(self, proposal, d_model=256, enc_nhead=8, dec_nhead=8,
                  num_encoder_layers=6, num_decoder_layers=6, dim_feedforward=1024, dropout=0.1,
                  activation="relu", return_intermediate_dec=False,
                  num_feature_levels=4, dec_n_points=4,  enc_n_points=4,
@@ -36,7 +36,9 @@ class DeformableTransformer(nn.Module):
         super().__init__()
         self.num_classes = num_classes
         self.d_model = d_model
-        self.nhead = nhead
+        self.enc_nhead=enc_nhead
+        self.dec_nhead=dec_nhead
+        # self.nhead = nhead
         self.two_stage = two_stage
         self.two_stage_num_proposals = two_stage_num_proposals
 
@@ -44,18 +46,18 @@ class DeformableTransformer(nn.Module):
         self.eff_specific_head = args.eff_specific_head
         encoder_layer = DeformableTransformerEncoderLayer(d_model, dim_feedforward,
                                                           dropout, activation,
-                                                          num_feature_levels, nhead, enc_n_points)
+                                                          num_feature_levels, enc_nhead, enc_n_points)
         self.encoder = DeformableTransformerEncoder(encoder_layer, num_encoder_layers) if num_encoder_layers !=0 else None
         self.neck_decoder = neck_decoder
         if neck_decoder == 'def_decoder':
             decoder_layer = DeformableTransformerDecoderLayer(d_model, dim_feedforward,
                                                             dropout, activation,
-                                                            num_feature_levels, nhead, dec_n_points, only_selfattn_dec)
+                                                            num_feature_levels, dec_nhead, dec_n_points, only_selfattn_dec)
             self.decoder = DeformableTransformerDecoder(decoder_layer, num_decoder_layers, return_intermediate_dec) if num_decoder_layers !=0 else None
         elif neck_decoder == 'cond_decoder':
             assert only_selfattn_dec == False, 'cond_decoder not support --selfattn_dec'
             assert args.with_box_refine == False, 'cond_decoder not support --with_box_refine'
-            decoder_layer = ConditionalTransformerDecoderLayer(d_model, nhead, dim_feedforward,
+            decoder_layer = ConditionalTransformerDecoderLayer(d_model, dec_nhead, dim_feedforward,
                                                 dropout, activation, normalize_before)
             decoder_norm = nn.LayerNorm(d_model)
             self.decoder = ConditionalTransformerDecoder(decoder_layer, num_decoder_layers, decoder_norm,
@@ -65,7 +67,7 @@ class DeformableTransformer(nn.Module):
             assert only_selfattn_dec == False, 'detr_decoder not support --selfattn_dec'
             assert args.with_box_refine == False, 'detr_decoder not support --with_box_refine'
             # assert args.topk_kv == False, 'detr_decoder not support --with_box_refine'
-            decoder_layer = DETRTransformerDecoderLayer(d_model, nhead, dim_feedforward,
+            decoder_layer = DETRTransformerDecoderLayer(d_model, dec_nhead, dim_feedforward,
                                                     dropout, activation, normalize_before)
             decoder_norm = nn.LayerNorm(d_model)
             self.decoder = DETRTransformerDecoder(decoder_layer, num_decoder_layers, decoder_norm,
@@ -84,7 +86,7 @@ class DeformableTransformer(nn.Module):
                 logger.info(f'build --msi_sso_encoder {msi_sso_encoder}')
                 msi_sso_encoder_layer = MsiSsoDeformableTransformerEncoderLayer(d_model, dim_feedforward,
                                                           dropout, activation,
-                                                          num_feature_levels, nhead, enc_n_points)
+                                                          num_feature_levels, enc_nhead, enc_n_points)
                 self.msi_sso_encoder = MsiSsoDeformableTransformerEncoder(msi_sso_encoder_layer, 1)
                 if msi_sso_encoder == 'msi_sso_p4':
                     self.sso_index = 1
@@ -102,7 +104,7 @@ class DeformableTransformer(nn.Module):
                 if neck_decoder == 'def_decoder':
                     decoder_layer = DeformableTransformerDecoderLayer(d_model, dim_feedforward,
                                                                     dropout, activation,
-                                                                    1, nhead, dec_n_points, only_selfattn_dec)
+                                                                    1, dec_nhead, dec_n_points, only_selfattn_dec)
                     self.decoder = DeformableTransformerDecoder(decoder_layer, num_decoder_layers, return_intermediate_dec) if num_decoder_layers !=0 else None
 
         if two_stage:
@@ -1063,7 +1065,8 @@ def build_deforamble_transformer_wo_encoder(args):
     return DeformableTransformer(
         proposal,
         d_model=args.hidden_dim,
-        nhead=args.nheads,
+        enc_nhead=args.enc_nheads,
+        dec_nhead=args.dec_nheads,
         num_encoder_layers=args.enc_layers,
         num_decoder_layers=args.dec_layers,
         dim_feedforward=args.dim_feedforward,

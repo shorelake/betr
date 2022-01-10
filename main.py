@@ -120,7 +120,9 @@ def get_args_parser():
                         help="Size of the embeddings (dimension of the transformer)")
     parser.add_argument('--dropout', default=0.1, type=float,
                         help="Dropout applied in the transformer")
-    parser.add_argument('--nheads', default=8, type=int,
+    parser.add_argument('--dec_nheads', default=8, type=int,
+                        help="Number of attention heads inside the transformer's attentions")
+    parser.add_argument('--enc_nheads', default=8, type=int,
                         help="Number of attention heads inside the transformer's attentions")
     ### conditional detr & detr
     parser.add_argument('--pre_norm', action='store_true')
@@ -269,7 +271,9 @@ def get_args_parser():
     ## dense stage aux loss for one-to-many
     parser.add_argument('--dense_aux_loss', default=None, type=str,
                         help="Name of the dense_aux_loss to use, now support None default, o2m, dam") #TODO    
-    parser.add_argument('--dense_aux_loss_coef', default=2, type=float)      
+    parser.add_argument('--dense_aux_loss_coef', default=2, type=float)    
+    parser.add_argument('--real_time', default=False, action='store_true',
+                        help="whether use low resolution")  
     return parser
 
 
