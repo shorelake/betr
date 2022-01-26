@@ -11,15 +11,37 @@
 Transforms and data augmentation for both image + bbox.
 """
 import random
+from turtle import pd
 
 import PIL
+from PIL import Image
 import torch
 import torchvision.transforms as T
 import torchvision.transforms.functional as F
-
+import cv2
+import numpy as np
 from util.box_ops import box_xyxy_to_cxcywh
 from util.misc import interpolate
 
+def augment_hsv(img, hgain=5, sgain=30, vgain=30):
+    # pil rgb to cv2 bgr
+    img = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
+
+    # cv2 process hsv
+    hsv_augs = np.random.uniform(-1, 1, 3) * [hgain, sgain, vgain]  # random gains
+    hsv_augs *= np.random.randint(0, 2, 3)  # random selection of h, s, v
+    hsv_augs = hsv_augs.astype(np.int16)
+    img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.int16)
+
+    img_hsv[..., 0] = (img_hsv[..., 0] + hsv_augs[0]) % 180
+    img_hsv[..., 1] = np.clip(img_hsv[..., 1] + hsv_augs[1], 0, 255)
+    img_hsv[..., 2] = np.clip(img_hsv[..., 2] + hsv_augs[2], 0, 255)
+
+    cv2.cvtColor(img_hsv.astype(img.dtype), cv2.COLOR_HSV2BGR, dst=img)  # no return needed
+
+    # cv2 bgr to pil rgb
+    img = Image.fromarray(cv2.cvtColor(img,cv2.COLOR_BGR2RGB))
+    return img
 
 def crop(image, target, region):
     cropped_image = F.crop(image, *region)
@@ -195,6 +217,15 @@ class RandomHorizontalFlip(object):
             return hflip(img, target)
         return img, target
 
+class AugmentHSV(object):
+    def __init__(self, p=1.0):
+        self.p = p
+    
+    def __call__(self, img, target):
+        if random.random() < self.p:
+            img=augment_hsv(img)
+            return img, target
+        return img, target
 
 class RandomResize(object):
     def __init__(self, sizes, max_size=None):
