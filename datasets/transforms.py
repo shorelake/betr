@@ -20,8 +20,160 @@ import torchvision.transforms as T
 import torchvision.transforms.functional as F
 import cv2
 import numpy as np
-from util.box_ops import box_xyxy_to_cxcywh
+from util.box_ops import box_xyxy_to_cxcywh, box_cxcywh_to_xyxy
 from util.misc import interpolate
+import math
+
+def get_aug_params(value, center=0):
+    if isinstance(value, float):
+        return random.uniform(center - value, center + value)
+    elif len(value) == 2:
+        return random.uniform(value[0], value[1])
+    else:
+        raise ValueError(
+            "Affine params should be either a sequence containing two values\
+                          or single float values. Got {}".format(
+                value
+            )
+        )
+
+
+def get_affine_matrix(
+    target_size,
+    degrees=10,
+    translate=0.1,
+    scales=0.1,
+    shear=10,
+):
+    twidth, theight = target_size
+
+    # Rotation and Scale
+    angle = get_aug_params(degrees)
+    scale = get_aug_params(scales, center=1.0)
+
+    if scale <= 0.0:
+        raise ValueError("Argument scale should be positive")
+
+    R = cv2.getRotationMatrix2D(angle=angle, center=(0, 0), scale=scale)
+
+    M = np.ones([2, 3])
+    # Shear
+    shear_x = math.tan(get_aug_params(shear) * math.pi / 180)
+    shear_y = math.tan(get_aug_params(shear) * math.pi / 180)
+
+    M[0] = R[0] + shear_y * R[1]
+    M[1] = R[1] + shear_x * R[0]
+
+    # Translation
+    translation_x = get_aug_params(translate) * twidth  # x translation (pixels)
+    translation_y = get_aug_params(translate) * theight  # y translation (pixels)
+
+    M[0, 2] = translation_x
+    M[1, 2] = translation_y
+
+    return M, scale
+
+def box_candidates(box1, box2, wh_thr=2, ar_thr=100, area_thr=0.1, eps=1e-16):  # box1(4,n), box2(4,n)
+    # Compute candidate boxes: box1 before augment, box2 after augment, wh_thr (pixels), aspect_ratio_thr, area_ratio
+    w1, h1 = box1[2] - box1[0], box1[3] - box1[1]
+    w2, h2 = box2[2] - box2[0], box2[3] - box2[1]
+    ar = np.maximum(w2 / (h2 + eps), h2 / (w2 + eps))  # aspect ratio
+    return (w2 > wh_thr) & (h2 > wh_thr) & (w2 * h2 / (w1 * h1 + eps) > area_thr) & (ar < ar_thr)  # candidates
+
+def apply_affine_to_bboxes(target_dic, target_size, M, scale):
+    targets = target_dic["boxes"]
+    num_gts = len(targets)
+    targets = targets.numpy()
+    # warp corner points
+    twidth, theight = target_size
+    corner_points = np.ones((4 * num_gts, 3))
+    corner_points[:, :2] = targets[:, [0, 1, 2, 3, 0, 3, 2, 1]].reshape(
+        4 * num_gts, 2
+    )  # x1y1, x2y2, x1y2, x2y1
+    corner_points = corner_points @ M.T  # apply affine transform
+    corner_points = corner_points.reshape(num_gts, 8)
+
+    # create new boxes
+    corner_xs = corner_points[:, 0::2]
+    corner_ys = corner_points[:, 1::2]
+    new_bboxes = (
+        np.concatenate(
+            (corner_xs.min(1), corner_ys.min(1), corner_xs.max(1), corner_ys.max(1))
+        )
+        .reshape(4, num_gts)
+        .T
+    )
+
+    # clip boxes
+    new_bboxes[:, 0::2] = new_bboxes[:, 0::2].clip(0, twidth)
+    new_bboxes[:, 1::2] = new_bboxes[:, 1::2].clip(0, theight)
+
+    # targets[:, :4] = new_bboxes
+    # import pdb;pdb.set_trace()
+    i = box_candidates(box1=targets[:, :4].T * scale, box2=new_bboxes.T, area_thr=0.10)
+    targets = targets[i]
+    targets[:, :4] = new_bboxes[i]
+    targets = torch.from_numpy(targets)
+    # import pdb;pdb.set_trace()
+    target_dic["boxes"] = targets
+    target_dic["labels"] = target_dic["labels"][i]
+    target_dic["area"] = target_dic["area"][i]*scale*scale #TODO, hack, maybe problem?
+    target_dic["iscrowd"] = target_dic["iscrowd"][i]
+    return target_dic
+
+def vis_boxes(img,boxes,name="beforeaffine.png"):
+    # pil rgb to cv2 bgr
+    img = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
+    for i in range(len(boxes)):
+        box = boxes[i]
+        x0 = int(box[0])
+        y0 = int(box[1])
+        x1 = int(box[2])
+        y1 = int(box[3])
+
+        color = (0,255,0)
+        cv2.rectangle(img, (x0, y0), (x1, y1), color, 2)
+
+    cv2.imwrite(name, img)
+    # return img
+
+
+def random_affine(
+    img,
+    target,
+    degrees=10,
+    translate=0.1,
+    scales=0.1,
+    shear=10,
+):
+    w, h = img.size
+    target_size = (w,h)
+
+    target = target.copy()
+    boxes = target["boxes"]
+    # vis_boxes(img,boxes,name="beforeaffine.png")
+    # import pdb;pdb.set_trace()
+    # pil rgb to cv2 bgr
+    img = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
+
+    # cv2 process affine
+    M, scale = get_affine_matrix(target_size, degrees, translate, scales, shear)
+
+    img = cv2.warpAffine(img, M, dsize=target_size, borderValue=(114, 114, 114))
+
+    # cv2 bgr to pil rgb
+    img = Image.fromarray(cv2.cvtColor(img,cv2.COLOR_BGR2RGB))
+
+    # Transform label coordinates
+    if len(boxes) > 0:
+        # boxes = box_xyxy_to_cxcywh(boxes)
+        target = apply_affine_to_bboxes(target, target_size, M, scale)
+        # boxes = box_cxcywh_to_xyxy(boxes)
+        # vis_boxes(img,boxes,name="afteraffine.png")
+        # import pdb;pdb.set_trace()
+        # target["boxes"] = boxes
+
+    return img, target
 
 def augment_hsv(img, hgain=5, sgain=30, vgain=30):
     # pil rgb to cv2 bgr
@@ -215,6 +367,20 @@ class RandomHorizontalFlip(object):
     def __call__(self, img, target):
         if random.random() < self.p:
             return hflip(img, target)
+        return img, target
+
+class RandomAffine(object):
+    def __init__(self, p=0.5):
+        self.p = p
+        self.degrees = 10.0
+        self.translate = 0.1
+        self.shear = 2.0
+        # self.scale=(0.1,2)
+        self.scale = (0.7,1.3)
+    def __call__(self, img, target):
+        if random.random() < self.p:
+            return random_affine(img, target, degrees=self.degrees,translate=self.translate,
+                                 scales=self.scale,shear=self.shear)
         return img, target
 
 class AugmentHSV(object):
