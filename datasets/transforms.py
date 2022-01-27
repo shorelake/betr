@@ -151,7 +151,7 @@ def random_affine(
 
     target = target.copy()
     boxes = target["boxes"]
-    # vis_boxes(img,boxes,name="beforeaffine.png")
+    # vis_boxes(img,target["boxes"],name="beforeaffine.png")
     # import pdb;pdb.set_trace()
     # pil rgb to cv2 bgr
     img = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
@@ -169,7 +169,7 @@ def random_affine(
         # boxes = box_xyxy_to_cxcywh(boxes)
         target = apply_affine_to_bboxes(target, target_size, M, scale)
         # boxes = box_cxcywh_to_xyxy(boxes)
-        # vis_boxes(img,boxes,name="afteraffine.png")
+        # vis_boxes(img,target["boxes"],name="afteraffine.png")
         # import pdb;pdb.set_trace()
         # target["boxes"] = boxes
 

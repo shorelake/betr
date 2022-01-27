@@ -354,6 +354,9 @@ def yolox_cspdarknet_l(pretrained=False, **kwargs):
     model = CSPDarknet(1,1)
     return model
 
+def yolox_cspdarknet_myn(pretrained=False, **kwargs):
+    model = CSPDarknet(0.33,0.65)
+    return model
 
 @register_model
 def yolox_cspdarknet_nano(pretrained=False, **kwargs):
