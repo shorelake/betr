@@ -131,8 +131,8 @@ class MosaicCocoDetection(CocoDetection):
 
         # import pdb;pdb.set_trace()
         if self.normalize is not None:
-            mosaic_img, target = self.normalize(mosaic_img, target)
-        return mosaic_img, target
+            mosaic_img, mosaic_target = self.normalize(mosaic_img, mosaic_target)
+        return mosaic_img, mosaic_target
 
     def vis_boxes(self,img,boxes,name="mosaic.png"):
         # pil rgb to cv2 bgr

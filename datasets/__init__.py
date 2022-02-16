@@ -11,7 +11,7 @@ import torch.utils.data
 from .torchvision_datasets import CocoDetection
 from .torchvision_datasets import VOCDetection
 # from .coco import build as build_coco
-from .mosaic_coco import build as build_coco
+# from .mosaic_coco import build as build_coco
 from .coco import make_coco_transforms
 from loguru import logger
 
@@ -27,7 +27,12 @@ def get_coco_api_from_dataset(dataset):
 
 def build_dataset(image_set, args):
     if args.dataset_file == 'coco':
-        return build_coco(image_set, args)
+        if args.mosaic:
+            from .mosaic_coco import build as build_coco
+            return build_coco(image_set, args)
+        else:
+            from .coco import build as build_coco
+            return build_coco(image_set, args)
     if args.dataset_file == 'coco_panoptic':
         # to avoid making panopticapi required for coco
         from .coco_panoptic import build as build_coco_panoptic
