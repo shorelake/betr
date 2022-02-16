@@ -112,6 +112,7 @@ class MosaicCocoDetection(CocoDetection):
             mosaic_target["boxes"][:,1] = torch.clamp(mosaic_target["boxes"][:,1],min=0,max=2 * input_h)
             mosaic_target["boxes"][:,2] = torch.clamp(mosaic_target["boxes"][:,2],min=0,max=2 * input_w)
             mosaic_target["boxes"][:,3] = torch.clamp(mosaic_target["boxes"][:,3],min=0,max=2 * input_h)
+            mosaic_target["labels"] = mosaic_target["labels"].long()
         # self.vis_boxes(mosaic_img, mosaic_target["boxes"], "mosaic.png")
 
         mosaic_img,mosaic_target = random_affine(mosaic_img,
@@ -122,6 +123,7 @@ class MosaicCocoDetection(CocoDetection):
                                                  scales=self.scale,
                                                  shear=self.shear,
                                                  is_cv2=True)
+        mosaic_target['size'] = torch.as_tensor([input_h,input_w],dtype=target['size'].dtype)
         
         # # pil rgb to cv2 bgr
         # mosaic_img = cv2.cvtColor(np.asarray(mosaic_img), cv2.COLOR_RGB2BGR)

@@ -85,6 +85,9 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     samples.mask = torch.nn.functional.interpolate(
                         samples.mask.unsqueeze(1).double(), size=size, mode="bilinear", align_corners=False
                     ).squeeze(1).bool()
+                    for target in targets:
+                        target['size'][0] = target['size'][0] * scale_y
+                        target['size'][1] = target['size'][1] * scale_x
 
 
         gt_masks = None
