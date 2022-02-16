@@ -64,7 +64,29 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     prefetcher = data_prefetcher(data_loader, device, prefetch=True)
     samples, targets = prefetcher.next()
     # for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
+    i = 0
+    # input_size = (640,640)
+    mosaic_size = (640,640)
+    random_size = (15,25) #(480,800)
+    size_factor = mosaic_size[1] * 1.0 / mosaic_size[0]
     for _ in metric_logger.log_every(range(len(data_loader)), print_freq, header):
+        # logger.info("i: {}".format(i))
+        if args.mosaic:
+            if(i+1) % 10 == 0:
+                # import pdb;pdb.set_trace()
+                size = random.randint(*random_size)
+                size = (int(32 * size), 32 * int(size * size_factor))
+                scale_y = size[0] / mosaic_size[0]
+                scale_x = size[1] / mosaic_size[1]
+                if scale_x != 1 or scale_y != 1:
+                    samples.tensors = torch.nn.functional.interpolate(
+                        samples.tensors, size=size, mode="bilinear", align_corners=False
+                    )
+                    samples.mask = torch.nn.functional.interpolate(
+                        samples.mask.unsqueeze(1).double(), size=size, mode="bilinear", align_corners=False
+                    ).squeeze(1).bool()
+
+
         gt_masks = None
         dam_masks = None
         if args.with_gt_mask:
@@ -127,6 +149,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         metric_logger.update(grad_norm=grad_total_norm)
 
         samples, targets = prefetcher.next()
+        i += 1
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     logger.info("Averaged stats:{}".format(metric_logger))

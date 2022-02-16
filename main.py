@@ -273,7 +273,9 @@ def get_args_parser():
                         help="Name of the dense_aux_loss to use, now support None default, o2m, dam") #TODO    
     parser.add_argument('--dense_aux_loss_coef', default=2, type=float)    
     parser.add_argument('--real_time', default=False, action='store_true',
-                        help="whether use low resolution")  
+                        help="whether use low resolution")
+    parser.add_argument('--mosaic', default=False, action='store_true',
+                        help="whether use mosaci augmentation")    
     return parser
 
 

@@ -117,8 +117,10 @@ def apply_affine_to_bboxes(target_dic, target_size, M, scale):
     # import pdb;pdb.set_trace()
     target_dic["boxes"] = targets
     target_dic["labels"] = target_dic["labels"][i]
-    target_dic["area"] = target_dic["area"][i]*scale*scale #TODO, hack, maybe problem?
-    target_dic["iscrowd"] = target_dic["iscrowd"][i]
+    if "area" in target_dic:
+        target_dic["area"] = target_dic["area"][i]*scale*scale #TODO, hack, maybe problem?
+    if "iscrowd" in target_dic:
+        target_dic["iscrowd"] = target_dic["iscrowd"][i]
     return target_dic
 
 def vis_boxes(img,boxes,name="beforeaffine.png"):
@@ -141,20 +143,27 @@ def vis_boxes(img,boxes,name="beforeaffine.png"):
 def random_affine(
     img,
     target,
+    target_size=None,
     degrees=10,
     translate=0.1,
     scales=0.1,
     shear=10,
+    is_cv2=False,
 ):
-    w, h = img.size
-    target_size = (w,h)
+    if not is_cv2:
+        w, h = img.size
+    else:
+        h, w = img.shape[:2]
+    if target_size == None:
+        target_size = (w,h)
 
     target = target.copy()
     boxes = target["boxes"]
     # vis_boxes(img,target["boxes"],name="beforeaffine.png")
     # import pdb;pdb.set_trace()
     # pil rgb to cv2 bgr
-    img = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
+    if not is_cv2:
+        img = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
 
     # cv2 process affine
     M, scale = get_affine_matrix(target_size, degrees, translate, scales, shear)

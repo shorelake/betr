@@ -10,7 +10,8 @@
 import torch.utils.data
 from .torchvision_datasets import CocoDetection
 from .torchvision_datasets import VOCDetection
-from .coco import build as build_coco
+# from .coco import build as build_coco
+from .mosaic_coco import build as build_coco
 from .coco import make_coco_transforms
 from loguru import logger
 
