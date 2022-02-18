@@ -356,6 +356,17 @@ class RandomSizeCrop(object):
         region = T.RandomCrop.get_params(img, [h, w])
         return crop(img, target, region)
 
+class RandomSquareSizeCrop(object):
+    def __init__(self, min_size: int, max_size: int):
+        self.min_size = min_size
+        self.max_size = max_size
+
+    def __call__(self, img: PIL.Image.Image, target: dict):
+        w = random.randint(self.min_size, min(img.width, self.max_size))
+        h = w
+        # h = random.randint(self.min_size, min(img.height, self.max_size))
+        region = T.RandomCrop.get_params(img, [h, w])
+        return crop(img, target, region)
 
 class CenterCrop(object):
     def __init__(self, size):
@@ -471,6 +482,22 @@ class Normalize(object):
             target["boxes"] = boxes
         return image, target
 
+class UnNormalize(object):
+    def __init__(self, mean, std):
+        self.mean = mean
+        self.std = std
+
+    def __call__(self, tensor):
+        """
+        Args:
+            tensor (Tensor): Tensor image of size (C, H, W) to be normalized.
+        Returns:
+            Tensor: Normalized image.
+        """
+        for t, m, s in zip(tensor, self.mean, self.std):
+            t.mul_(s).add_(m)
+            # The normalize code -> t.sub_(m).div_(s)
+        return tensor
 
 class Compose(object):
     def __init__(self, transforms):

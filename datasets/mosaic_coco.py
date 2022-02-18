@@ -55,6 +55,11 @@ class MosaicCocoDetection(CocoDetection):
                         T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
                     ])
         self.normalize = normalize
+        self.mosaic_transform = T.Compose([
+                                    # T.RandomSquareSizeCrop(640, 640),
+                                    T.RandomSquareSizeCrop(640, 1280),
+                                    T.RandomResize([640], max_size=640),
+                                ])
         self.img_size = (640,640)
         # rotation angle range, for example, if set to 2, the true range is (-2, 2)
         self.degrees = 10.0
@@ -73,7 +78,7 @@ class MosaicCocoDetection(CocoDetection):
         xc = input_w
         # 3 additional image indices
         indices = [idx] + [random.randint(0, len(self.ids) - 1) for _ in range(3)]
-        mosaic_target = {'boxes': torch.zeros([0,4]), 'labels':torch.zeros([0])}
+        mosaic_target = {'boxes': torch.zeros([0,4]), 'labels':torch.zeros([0]), 'iscrowd':torch.zeros([0])}
         for i_mosaic, index in enumerate(indices):
             img, target = super(MosaicCocoDetection,self).__getitem__(index)
             # pil rgb to cv2 bgr
@@ -106,6 +111,7 @@ class MosaicCocoDetection(CocoDetection):
                     boxes[:, 3] = scale * boxes[:, 3] + padh
                     mosaic_target["boxes"] = torch.cat((mosaic_target["boxes"], boxes),dim=0)
                     mosaic_target["labels"] = torch.cat((mosaic_target["labels"], target["labels"]),dim=0)
+                    mosaic_target["iscrowd"] = torch.cat((mosaic_target["iscrowd"], target["iscrowd"]), dim=0)
 
         if len(mosaic_target["boxes"]):
             mosaic_target["boxes"][:,0] = torch.clamp(mosaic_target["boxes"][:,0],min=0,max=2 * input_w)
@@ -113,23 +119,34 @@ class MosaicCocoDetection(CocoDetection):
             mosaic_target["boxes"][:,2] = torch.clamp(mosaic_target["boxes"][:,2],min=0,max=2 * input_w)
             mosaic_target["boxes"][:,3] = torch.clamp(mosaic_target["boxes"][:,3],min=0,max=2 * input_h)
             mosaic_target["labels"] = mosaic_target["labels"].long()
+            mosaic_target["iscrowd"] = mosaic_target["iscrowd"].long()
         # self.vis_boxes(mosaic_img, mosaic_target["boxes"], "mosaic.png")
 
-        mosaic_img,mosaic_target = random_affine(mosaic_img,
-                                                 mosaic_target,
-                                                 target_size=(input_w,input_h),
-                                                 degrees=self.degrees,
-                                                 translate=self.translate,
-                                                 scales=self.scale,
-                                                 shear=self.shear,
-                                                 is_cv2=True)
-        mosaic_target['size'] = torch.as_tensor([input_h,input_w],dtype=target['size'].dtype)
-        
-        # # pil rgb to cv2 bgr
-        # mosaic_img = cv2.cvtColor(np.asarray(mosaic_img), cv2.COLOR_RGB2BGR)
-        # self.vis_boxes(mosaic_img, mosaic_target["boxes"], "mosaic_affined.png")
-        # # cv2 bgr to pil rgb
-        # mosaic_img = Image.fromarray(cv2.cvtColor(mosaic_img,cv2.COLOR_BGR2RGB))
+        if self.mosaic_transform is None:
+            #random affine
+            mosaic_img,mosaic_target = random_affine(mosaic_img,
+                                                    mosaic_target,
+                                                    target_size=(input_w,input_h),
+                                                    degrees=self.degrees,
+                                                    translate=self.translate,
+                                                    scales=self.scale,
+                                                    shear=self.shear,
+                                                    is_cv2=True)
+            mosaic_target['size'] = torch.as_tensor([input_h,input_w],dtype=target['size'].dtype)
+            # vis
+            # pil rgb to cv2 bgr
+            # mosaic_img = cv2.cvtColor(np.asarray(mosaic_img), cv2.COLOR_RGB2BGR)
+            # self.vis_boxes(mosaic_img, mosaic_target["boxes"], "mosaic_resized.png")
+        else:
+            # crop & resize
+            # cv2 bgr to pil rgb
+            mosaic_img = Image.fromarray(cv2.cvtColor(mosaic_img,cv2.COLOR_BGR2RGB))
+            mosaic_img,mosaic_target = self.mosaic_transform(mosaic_img,mosaic_target)
+            # vis
+            # pil rgb to cv2 bgr
+            # mosaic_img = cv2.cvtColor(np.asarray(mosaic_img), cv2.COLOR_RGB2BGR)
+            # self.vis_boxes(mosaic_img, mosaic_target["boxes"], "mosaic_resized.png")
+            # import pdb;pdb.set_trace()
 
         # import pdb;pdb.set_trace()
         if self.normalize is not None:

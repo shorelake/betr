@@ -17,6 +17,10 @@ python -u main.py \
     --enc_layers 1 \
     --real_time \
     --num_feature_levels 3 \
-    --batch_size 2 \
+    --lr_backbone 2.5e-5 \
+    --lr 2.5e-5 \
+    --lr_linear_proj_mult 1 \
+    --lr_scheduler cosinelr \
+    --batch_size 8 \
     --mosaic \
     ${PY_ARGS}

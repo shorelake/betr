@@ -23,7 +23,45 @@ from datasets.panoptic_eval import PanopticEvaluator
 from datasets.data_prefetcher import data_prefetcher
 from util.box_ops import box_cxcywh_to_xyxy
 import random
+import cv2
 from loguru import logger
+
+def debug_vis(tensors,targets):
+    def vis_boxes(img,boxes,name="inputs.png"):
+        # pil rgb to cv2 bgr
+        # img = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
+        # import numpy as np
+        for i in range(len(boxes)):
+            box = boxes[i]
+            x0 = int(box[0])
+            y0 = int(box[1])
+            x1 = int(box[2])
+            y1 = int(box[3])
+
+            color = (0,255,0)
+            cv2.rectangle(img, (x0, y0), (x1, y1), color, 2)
+
+        cv2.imwrite(name, img)
+    from datasets.transforms import UnNormalize
+    unnorm = UnNormalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    img_tensor = tensors[0]
+    img_tensor = unnorm(img_tensor)
+    # img_tensor = img_tensor.permute(1, 2, 0).cpu().numpy()
+    import torchvision.transforms.functional as F
+    import numpy as np
+    # import pdb;pdb.set_trace()
+    img_tensor = F.to_pil_image(img_tensor)
+    img_tensor = cv2.cvtColor(np.asarray(img_tensor), cv2.COLOR_RGB2BGR)
+    
+    img_boxes = targets[0]['boxes']
+    size = targets[0]["size"]
+    img_h, img_w = size.unbind()
+    scale_fct = torch.stack([img_w, img_h, img_w, img_h])
+    img_boxes = img_boxes * scale_fct
+    from util.box_ops import box_xyxy_to_cxcywh
+    img_boxes = box_cxcywh_to_xyxy(img_boxes)
+    vis_boxes(img_tensor, img_boxes, "inputs.png")
+
 
 def get_gt_mask(target, mask_size, device):
     h,w = target['size']
@@ -88,6 +126,9 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     for target in targets:
                         target['size'][0] = target['size'][0] * scale_y
                         target['size'][1] = target['size'][1] * scale_x
+                # visualize code
+                # import pdb;pdb.set_trace()
+                # debug_vis(samples.tensors, targets)
 
 
         gt_masks = None
