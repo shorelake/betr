@@ -21,8 +21,8 @@ mkdir -p "${OUT_DIR}"
   --enc_layers 1 \
   --dec_layers 2 \
   --lr_backbone 1e-4 \
-  --lr 1e-4 \
-  --lr_linear_proj_mult 1 \
+  --lr 2e-4 \
+  --lr_linear_proj_mult 0.1 \
   --lr_scheduler cosinelr \
   --two_stage \
   --eff_query_init \
