@@ -365,9 +365,12 @@ def _get_activation_fn(activation):
 
 
 def build_deforamble_transformer(args):
+    nheads = getattr(args, 'nheads', None)
+    if nheads is None:
+        nheads = getattr(args, 'dec_nheads', 8)
     return DeformableTransformer(
         d_model=args.hidden_dim,
-        nhead=args.nheads,
+        nhead=nheads,
         num_decoder_layers=args.dec_layers,
         dim_feedforward=args.dim_feedforward,
         dropout=args.dropout,

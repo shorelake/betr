@@ -14,3 +14,9 @@ data/
 exp/
 exps
 pretrained_model
+
+# Local training outputs and model weights
+workdir/
+logs/
+*.pth
+*.pt

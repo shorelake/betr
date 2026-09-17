@@ -271,10 +271,10 @@ class DefaultProposalNet(nn.Module):
             else:
                 query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
             return (enc_outputs_class, enc_outputs_coord, enc_outputs_mask, 
-                    reference_points, query_embed, tgt, enc_outputs_fg_class,None, topk_proposals)
+                    reference_points, query_embed, tgt, enc_outputs_fg_class,None, topk_proposals, None)
         else:
             return (enc_outputs_class, enc_outputs_coord,enc_outputs_mask, 
-                    None,None,None, None,None, None)
+                    None,None,None, None,None, None, None)
 
 class RpnDefaultProposalNet(nn.Module):
     def __init__(self, d_model=256, num_classes=91, num_proposals=300, 

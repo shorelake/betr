@@ -9,6 +9,7 @@ from collections import OrderedDict
 from importlib import import_module
 from tempfile import TemporaryDirectory
 
+import argparse
 import torch
 import torchvision
 from torch.optim import Optimizer
@@ -274,7 +275,8 @@ def _load_checkpoint(filename, map_location=None):
     else:
         if not osp.isfile(filename):
             raise IOError(f'{filename} is not a checkpoint file')
-        checkpoint = torch.load(filename, map_location=map_location)
+        with torch.serialization.safe_globals([argparse.Namespace]):
+            checkpoint = torch.load(filename, map_location=map_location, weights_only=True)
     return checkpoint
 
 
