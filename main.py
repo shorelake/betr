@@ -39,13 +39,13 @@ def get_args_parser():
     parser = argparse.ArgumentParser('Deformable DETR Detector', add_help=False)
     parser.add_argument('--lr', default=2e-4, type=float)
     parser.add_argument('--lr_backbone_names', default=["backbone.0"], type=str, nargs='+')
-    parser.add_argument('--lr_backbone', default=2e-5, type=float)
+    parser.add_argument('--lr_backbone', default=1e-4, type=float)
     parser.add_argument('--lr_linear_proj_names', default=['reference_points', 'sampling_offsets'], type=str, nargs='+')
     parser.add_argument('--lr_linear_proj_mult', default=0.1, type=float)
 
-    parser.add_argument('--lr_scheduler', default='steplr', type=str,
+    parser.add_argument('--lr_scheduler', default='cosinelr', type=str,
                         help="support steplr, cosinelr")
-    parser.add_argument('--batch_size', default=2, type=int)
+    parser.add_argument('--batch_size', default=4, type=int)
     parser.add_argument('--weight_decay', default=1e-4, type=float)
     parser.add_argument('--epochs', default=50, type=int)
     parser.add_argument('--lr_drop', default=40, type=int)
@@ -64,7 +64,7 @@ def get_args_parser():
                         help='warmup learning rate (default: 1e-6)')
     parser.add_argument('--min-lr', type=float, default=1e-7, metavar='LR',
                         help='lower lr bound for cyclic schedulers that hit 0 (1e-5)')
-    parser.add_argument('--warmup-epochs', type=int, default=0, metavar='N',
+    parser.add_argument('--warmup-epochs', type=int, default=5, metavar='N',
                         help='epochs to warmup LR, if scheduler supports')
     parser.add_argument('--decay-rate', '--dr', type=float, default=0.1, metavar='RATE',
                         help='LR decay rate (default: 0.1)')
@@ -75,8 +75,8 @@ def get_args_parser():
     parser.add_argument('--detector', default='deformable_detr', type=str,
                         help="support deformable_detr, vidt")
     # Variants of Deformable DETR
-    parser.add_argument('--with_box_refine', default=False, action='store_true')
-    parser.add_argument('--two_stage', default=False, action='store_true')
+    parser.add_argument('--with_box_refine', default=True, action='store_true')
+    parser.add_argument('--two_stage', default=True, action='store_true')
     parser.add_argument('--init_tgt_withtopk', default=False, action='store_true')
 
     # Model parameters
@@ -84,9 +84,9 @@ def get_args_parser():
                         help="Path to the pretrained model. If set, only the mask head will be trained")
 
     # * vit Backbone
-    parser.add_argument('--vit_backbone', default=None, type=str,
+    parser.add_argument('--vit_backbone', default='swin_nano', type=str,
                         help="Name of the vit backbone to use, now only support swin family") #TODO
-    parser.add_argument('--pretrained_path', default=None, type=str,
+    parser.add_argument('--pretrained_path', default='/home/wencanhe/.vscode-server/HUSTVL/Deformable-DETR/swin_nano_patch4_window7_224.pth', type=str,
                         help="the pretrained path to load pretrained weight") #TODO
 
     # * CNN Backbone
@@ -110,9 +110,9 @@ def get_args_parser():
     parser.add_argument('--update_query_pos', action='store_true',
                         help="update query pos in cross attention if flag is provided")
     # * Transformer
-    parser.add_argument('--enc_layers', default=6, type=int,
+    parser.add_argument('--enc_layers', default=1, type=int,
                         help="Number of encoding layers in the transformer")
-    parser.add_argument('--dec_layers', default=6, type=int,
+    parser.add_argument('--dec_layers', default=2, type=int,
                         help="Number of decoding layers in the transformer")
     parser.add_argument('--dim_feedforward', default=1024, type=int,
                         help="Intermediate size of the feedforward layers in the transformer blocks")
@@ -174,14 +174,14 @@ def get_args_parser():
                         help="coco or voc")
     parser.add_argument('--dataset_file', default='coco',
                         help="coco or voc")
-    parser.add_argument('--coco_path', default='./data/coco', type=str)
+    parser.add_argument('--coco_path', default='/data/coco', type=str)
     parser.add_argument('--voc_path', default='./data/VOCdevkit', type=str)
     parser.add_argument('--voc_trainsplit', default='0712', type=str,
                         help='07,12,0712')
     parser.add_argument('--coco_panoptic_path', type=str)
     parser.add_argument('--remove_difficult', action='store_true')
 
-    parser.add_argument('--output_dir', default='',
+    parser.add_argument('--output_dir', default='/home/wencanhe/.vscode-server/HUSTVL/Deformable-DETR/logs/2dec+1enc_fivetimesbackbonelr',
                         help='path where to save, empty for no saving')
     parser.add_argument('--device', default='cuda',
                         help='device to use for training / testing')
@@ -200,7 +200,7 @@ def get_args_parser():
     parser.add_argument('--cross_indices', default=[3], nargs='+', type=int, help='stage ids for [DET x PATCH] cross-attention')
     # d2detr with inited queries
     parser.add_argument('--init_query_from_backbone', default=False, action='store_true')
-    parser.add_argument('--print_freq', default=100, type=int, help='number of iteration to print training logs')
+    parser.add_argument('--print_freq', default=1000, type=int, help='number of iteration to print training logs')
     # info for param and FLOPS
     parser.add_argument('--info', action='store_true')
     # using anchors for conditional_detr
@@ -219,8 +219,8 @@ def get_args_parser():
     parser.add_argument('--cross_update', action='store_true')
 
     # * Efficient DETR
-    parser.add_argument('--eff_query_init', default=False, action='store_true')
-    parser.add_argument('--eff_specific_head', default=False, action='store_true')
+    parser.add_argument('--eff_query_init', default=True, action='store_true')
+    parser.add_argument('--eff_specific_head', default=True, action='store_true')
     parser.add_argument('--agn_proposal', default=False, action='store_true')
 
     ## Neck encoder
@@ -230,7 +230,7 @@ def get_args_parser():
 
 
     ## proposal net
-    parser.add_argument('--proposal_net', default='default', type=str,
+    parser.add_argument('--proposal_net', default='rpn_default', type=str,
                         help="Name of the proposal_net to use, now support default, rpn_default, \
                               fcos, retina") #TODO
 
@@ -264,12 +264,12 @@ def get_args_parser():
     parser.add_argument('--dense_giou_loss_coef', default=2, type=float)
 
     # * dense part kd from dec loss
-    parser.add_argument('--kd_from_dec', default=False, action='store_true',
+    parser.add_argument('--kd_from_dec', default=True, action='store_true',
                         help="use final dec layer logit kd enc logits")
     parser.add_argument('--dense_kd_loss_coef', default=2, type=float)
     
     ## dense stage aux loss for one-to-many
-    parser.add_argument('--dense_aux_loss', default=None, type=str,
+    parser.add_argument('--dense_aux_loss', default='dam', type=str,
                         help="Name of the dense_aux_loss to use, now support None default, o2m, dam") #TODO    
     parser.add_argument('--dense_aux_loss_coef', default=2, type=float)    
     parser.add_argument('--real_time', default=False, action='store_true',
@@ -308,7 +308,7 @@ def main(args):
     if args.with_dam_mask:
         from models.cond_detr.DAM_cond_detr import build
         teacher_model,_,_ = build(args)
-        checkpoint = torch.load('./pretrained_model/r50_default_cond_detr.pth') # 41.1 mAP
+        checkpoint = torch.load('') # 41.1 mAP
         teacher_model.load_state_dict(checkpoint['model'])
         teacher_model.eval()
         for param in teacher_model.parameters():
@@ -555,8 +555,8 @@ def main(args):
         lr_scheduler.step(epoch)
         if args.output_dir:
             checkpoint_paths = [output_dir / 'checkpoint.pth']
-            # extra checkpoint before LR drop and every 5 epochs
-            if (epoch + 1) % args.lr_drop == 0 or (epoch + 1) % 5 == 0:
+            # extra checkpoint before LR drop and every 50 epochs
+            if (epoch + 1) % args.lr_drop == 0 or (epoch + 1) % 50 == 0:
                 checkpoint_paths.append(output_dir / f'checkpoint{epoch:04}.pth')
             for checkpoint_path in checkpoint_paths:
                 utils.save_on_master({

@@ -185,6 +185,7 @@ class DeformableTransformer(nn.Module):
         enc_outputs_fg_class = None
         enc_outputs_class = None
         enc_outputs_mask = None
+        enc_outputs_filter = None
         if self.two_stage:
             (enc_outputs_class, enc_outputs_coord,enc_outputs_mask, 
              reference_points, query_embed, tgt, enc_outputs_fg_class, enc_loss, topk_proposal, enc_outputs_filter) = \

@@ -5,4 +5,5 @@ scipy
 yacs
 timm
 loguru
-mmcv
+fvcore
+matplotlib
