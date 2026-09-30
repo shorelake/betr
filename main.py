@@ -269,9 +269,12 @@ def get_args_parser():
     parser.add_argument('--dense_kd_loss_coef', default=2, type=float)
     
     ## dense stage aux loss for one-to-many
-    parser.add_argument('--dense_aux_loss', default='dam', type=str,
-                        help="Name of the dense_aux_loss to use, now support None default, o2m, dam") #TODO    
-    parser.add_argument('--dense_aux_loss_coef', default=2, type=float)    
+    parser.add_argument('--dense_aux_loss', default='dam', type=lambda s: None if s.lower() == 'none' else s,
+                        help="none: disabled; gt: cost-based one-to-many focal; gt-defcn: DeFCN quality-based focal; o2m: legacy focal+IoU; dam: A2F")
+    parser.add_argument('--dense_aux_loss_coef', default=2, type=float)
+    parser.add_argument('--a2f_ratio', default=0.2, type=float)
+    parser.add_argument('--spatial_prior_radius', default=1.5, type=float)
+    parser.add_argument('--no_kd_from_dec', dest='kd_from_dec', action='store_false')
     parser.add_argument('--real_time', default=False, action='store_true',
                         help="whether use low resolution")
     parser.add_argument('--mosaic', default=False, action='store_true',
@@ -505,7 +508,8 @@ def main(args):
             checkpoint = torch.hub.load_state_dict_from_url(
                 args.resume, map_location='cpu', check_hash=True)
         else:
-            checkpoint = torch.load(args.resume, map_location='cpu')
+            with torch.serialization.safe_globals([argparse.Namespace]):
+                checkpoint = torch.load(args.resume, map_location='cpu', weights_only=True)
         missing_keys, unexpected_keys = model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
         unexpected_keys = [k for k in unexpected_keys if not (k.endswith('total_params') or k.endswith('total_ops'))]
         if len(missing_keys) > 0:
@@ -527,12 +531,16 @@ def main(args):
                 logger.warning('Warning: (hack) args.override_resumed_lr_drop is set to True, so args.lr_drop would override lr_drop in resumed lr_scheduler.')
                 lr_scheduler.step_size = args.lr_drop
                 lr_scheduler.base_lrs = list(map(lambda group: group['initial_lr'], optimizer.param_groups))
-            lr_scheduler.step(lr_scheduler.last_epoch)
+            if args.lr_scheduler == 'cosinelr':
+                lr_scheduler.base_values = [pg['initial_lr'] for pg in optimizer.param_groups]
+                lr_scheduler.step(checkpoint['epoch'])
+            else:
+                lr_scheduler.step(lr_scheduler.last_epoch)
             args.start_epoch = checkpoint['epoch'] + 1
         # check the resumed model
         if not args.eval:
             test_stats, coco_evaluator = evaluate(
-                model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir
+                model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir, args
             )
     
     if args.eval:

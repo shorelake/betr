@@ -313,7 +313,7 @@ class SetCriterion(nn.Module):
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
     def __init__(self, num_classes, matcher, enc_matcher, enc_aux_matcher, weight_dict, losses, eff_specific_head=False, 
-                 focal_alpha=0.25, my_enc_loss=False, dense_aux_loss=None, kd_from_dec=False):
+                 focal_alpha=0.25, my_enc_loss=False, dense_aux_loss=None, kd_from_dec=False, a2f_ratio=0.2):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -336,6 +336,9 @@ class SetCriterion(nn.Module):
         self.my_enc_loss = my_enc_loss
         self.dense_aux_loss = dense_aux_loss
         self.kd_from_dec = kd_from_dec
+        if not 0 < a2f_ratio <= 1:
+            raise ValueError('a2f_ratio must be in (0, 1]')
+        self.a2f_ratio = a2f_ratio
 
     def loss_labels(self, outputs, targets, indices, num_boxes, log=True, enc_outputs=False, dense_loss=False):
         """Classification loss (NLL)
@@ -459,8 +462,8 @@ class SetCriterion(nn.Module):
             flat_grid_attn_map_dec = flat_grid_attn_map_dec.masked_fill(
                 outputs['mask_flatten'], flat_grid_attn_map_dec.min()-1)
         valid_token_num = (~ outputs['mask_flatten']).sum(axis=-1)
-        ratio = 0.2
-        sparse_token_nums = (valid_token_num*ratio).int()+1
+        ratio = self.a2f_ratio
+        sparse_token_nums = torch.minimum((valid_token_num*ratio).int()+1, valid_token_num)
         # sparse_token_nums = outputs["sparse_token_nums"]
         num_topk = sparse_token_nums.max()
 
@@ -629,14 +632,15 @@ class SetCriterion(nn.Module):
                         losses.update(aux_l_dict)
                         # import pdb;pdb.set_trace()
                         # aux_l_dict = self.loss_ious(enc_outputs, bin_targets, aux_indices, aux_num_boxes, **aux_kwargs)
-                        num_fg = (aux_gt_ious>0).sum()
-                        num_fg = torch.as_tensor([num_fg], dtype=torch.float, device=next(iter(outputs.values())).device)
-                        if is_dist_avail_and_initialized():
-                            torch.distributed.all_reduce(num_fg)
-                        num_fg = torch.clamp(num_fg / get_world_size(), min=1).item()
-                        aux_l_dict = self.loss_aux_ious(enc_outputs, aux_gt_ious, num_fg)
-                        aux_l_dict = {k + f'_enc_aux': v for k, v in aux_l_dict.items()}
-                        losses.update(aux_l_dict)
+                        if self.dense_aux_loss == 'o2m':
+                            num_fg = (aux_gt_ious>0).sum()
+                            num_fg = torch.as_tensor([num_fg], dtype=torch.float, device=next(iter(outputs.values())).device)
+                            if is_dist_avail_and_initialized():
+                                torch.distributed.all_reduce(num_fg)
+                            num_fg = torch.clamp(num_fg / get_world_size(), min=1).item()
+                            aux_l_dict = self.loss_aux_ious(enc_outputs, aux_gt_ious, num_fg)
+                            aux_l_dict = {k + f'_enc_aux': v for k, v in aux_l_dict.items()}
+                            losses.update(aux_l_dict)
                     else:
                         aux_l_dict = self.loss_mask_prediction(enc_outputs)
                         aux_l_dict = {k + f'_enc_aux': v for k, v in aux_l_dict.items()}
@@ -786,7 +790,7 @@ def build(args):
         enc_matcher = build_dense_matcher(args)
         if args.dense_aux_loss is None:
             enc_aux_matcher = None
-        elif args.dense_aux_loss == 'o2m':
+        elif args.dense_aux_loss in ('o2m', 'gt', 'gt-defcn'):
             logger.info('build dense aux matcher for one to many loss')
             enc_aux_matcher = build_dense_aux_matcher(args)
         elif args.dense_aux_loss == 'dam':
@@ -819,6 +823,8 @@ def build(args):
             weight_dict['loss_mask_pred_enc_aux'] = args.dense_aux_loss_coef
     if args.kd_from_dec:
         weight_dict['loss_dec_kd_enc'] = args.dense_kd_loss_coef
+    if args.dense_aux_loss in ('gt', 'gt-defcn'):
+        weight_dict['loss_ce_enc_aux'] = args.dense_aux_loss_coef
 
     losses = ['labels', 'boxes', 'cardinality']
     if args.masks:
@@ -826,7 +832,7 @@ def build(args):
     # num_classes, matcher, weight_dict, losses, focal_alpha=0.25
     criterion = SetCriterion(num_classes, matcher, enc_matcher,enc_aux_matcher, weight_dict, losses, eff_specific_head=args.eff_specific_head, 
                              focal_alpha=args.focal_alpha, my_enc_loss=args.my_enc_loss, dense_aux_loss=args.dense_aux_loss,
-                             kd_from_dec=args.kd_from_dec)
+                             kd_from_dec=args.kd_from_dec, a2f_ratio=getattr(args, 'a2f_ratio', 0.2))
     
   
     

@@ -335,7 +335,7 @@ class SpatialPriorHungarianMatcher(nn.Module):
 
             # get spatial prior
             spatial_prior = []
-            center_sampling_radius = 1.5 # when center_sampling_radius = 0, all in gt boxes count
+            center_sampling_radius = getattr(self, 'radius', 1.5)
             for i, (shifts_per_image, targets_per_image) in enumerate(zip(shifts, targets)):
                 gt_boxes = targets_per_image['boxes']
                 if len(gt_boxes) == 0:
@@ -366,13 +366,22 @@ class SpatialPriorHungarianMatcher(nn.Module):
                                 shifts_i, center_boxes.unsqueeze(1))
                             is_in_boxes.append(center_deltas.min(dim=-1).values > 0)
                         is_in_boxes = torch.cat(is_in_boxes, dim=1)
+                    elif center_sampling_radius == 0:
+                        # One nearest grid point per level, as in thesis table 3.3.
+                        is_in_boxes = []
+                        for shifts_i in shifts_per_image:
+                            distance = torch.cdist(centers, shifts_i)
+                            selected = torch.zeros_like(distance, dtype=torch.bool)
+                            selected.scatter_(1, distance.argmin(1, keepdim=True), True)
+                            is_in_boxes.append(selected)
+                        is_in_boxes = torch.cat(is_in_boxes, dim=1)
                     else:
                         # no center sampling, it will use all the locations within a ground-truth box
                         is_in_boxes = deltas.min(dim=-1).values > 0
                     
                     spatial_prior.append(is_in_boxes.transpose(0,1))
                     # import pdb;pdb.set_trace()
-            if len(spatial_prior) !=0:
+            if len(spatial_prior) != 0 and center_sampling_radius != float('inf'):
                 INF = 1e8
                 spatial_prior = torch.cat(spatial_prior,dim=1)
                 spatial_prior = spatial_prior.unsqueeze(0).expand(bs,-1,-1)
@@ -524,7 +533,7 @@ class DenseAuxMatcherV0(nn.Module):
                     st, ed = 0, 0
                     for shifts_i in shifts_per_image:
                         ed += len(shifts_i)
-                        _, topk_idxs = C[st:ed, :].topk(aux_topk, dim=0, largest=False)
+                        _, topk_idxs = C[st:ed, :].topk(min(aux_topk, ed-st), dim=0, largest=False)
                         candidate_idxs.append(st + topk_idxs)
                         st = ed
                     candidate_idxs = torch.cat(candidate_idxs, dim=0)
@@ -597,6 +606,64 @@ class DenseAuxMatcherV0(nn.Module):
         deltas = torch.cat((shifts - boxes[..., :2], boxes[..., 2:] - shifts),
                            dim=-1) * shifts.new_tensor(weights)
         return deltas
+
+class DeFCNAuxMatcher(DenseAuxMatcherV0):
+    """DeFCN auxiliary assignment: raw class probability^.2 * predicted IoU^.8.
+
+    Per-level top 9, quality >= candidate mean + sample std, strictly inside
+    GT, and maximum-quality conflict resolution. No filter score or box loss.
+    Returns maximum GT IoUs only for compatibility with existing analysis tools.
+    """
+
+    @torch.no_grad()
+    def forward(self, outputs, targets):
+        probs = outputs['pred_logits'].sigmoid()
+        boxes = outputs['pred_boxes']
+        shifts = self.grid_shifts(outputs['spatial_shapes'], outputs['strides'], boxes.device)
+        locations = torch.cat(shifts)
+        indices, max_ious = [], []
+        for b, target in enumerate(targets):
+            if len(target['labels']) == 0:
+                empty = torch.empty(0, dtype=torch.int64)
+                indices.append((empty, empty.clone()))
+                max_ious.append(boxes.new_zeros(boxes.shape[1]))
+                continue
+            ious = box_ops.box_iou(box_cxcywh_to_xyxy(boxes[b]),
+                                  box_cxcywh_to_xyxy(target['boxes']))[0].clamp(min=0)
+            max_ious.append(ious.max(dim=1).values)
+            quality = probs[b][:, target['labels']].pow(.2) * ious.pow(.8)
+            # Padding is not eligible for assignment (absent from single-image inputs).
+            valid = torch.ones(boxes.shape[1], dtype=torch.bool, device=boxes.device)
+            if outputs.get('mask_flatten') is not None:
+                valid = ~outputs['mask_flatten'][b]
+            candidates, start = [], 0
+            for level in shifts:
+                ids = torch.arange(start, start + len(level), device=boxes.device)
+                ids = ids[valid[ids]]
+                if len(ids):
+                    chosen = quality[ids].topk(min(9, len(ids)), dim=0).indices
+                    candidates.append(ids[chosen])
+                start += len(level)
+            if not candidates:
+                empty = torch.empty(0, dtype=torch.int64)
+                indices.append((empty, empty.clone()))
+                continue
+            candidates = torch.cat(candidates)
+            candidate_quality = quality.gather(0, candidates)
+            # Official sample std; define singleton std as zero for tiny inputs.
+            threshold = candidate_quality.mean(0) + candidate_quality.std(
+                0, unbiased=candidate_quality.shape[0] > 1)
+            positive = torch.zeros_like(quality, dtype=torch.bool).scatter_(0, candidates, True)
+            h, w = target['size'].unbind()
+            scale = torch.stack((w, h, w, h)).to(boxes)
+            gt_xyxy = box_cxcywh_to_xyxy(target['boxes']) * scale
+            inside = self.get_deltas(locations, gt_xyxy[:, None]).min(-1).values.t() > 0
+            positive &= (quality >= threshold) & inside & valid[:, None]
+            best, matched = quality.masked_fill(~positive, -1).max(1)
+            selected = torch.where(best >= 0)[0]
+            indices.append((selected.cpu(), matched[selected].cpu()))
+        return indices, torch.stack(max_ious)
+
 
 class DenseAuxMatcherV1(nn.Module):
     """This class computes an assignment between the targets and the predictions of the network
@@ -721,11 +788,18 @@ def build_matcher(args):
                             cost_giou=args.set_cost_giou)
 
 def build_dense_matcher(args):
-    return SpatialPriorHungarianMatcher(cost_class=args.dense_set_cost_class,
+    radius = getattr(args, 'spatial_prior_radius', 1.5)
+    if radius < 0 or radius != radius:
+        raise ValueError('spatial_prior_radius must be nonnegative')
+    matcher = SpatialPriorHungarianMatcher(cost_class=args.dense_set_cost_class,
                             cost_bbox=args.dense_set_cost_bbox,
                             cost_giou=args.dense_set_cost_giou)
+    matcher.radius = radius
+    return matcher
 
 def build_dense_aux_matcher(args):
+    if getattr(args, "dense_aux_loss", None) == "gt-defcn":
+        return DeFCNAuxMatcher()
     # return DenseAuxMatcherV1(cost_class=args.dense_set_cost_class,
     #                         cost_bbox=args.dense_set_cost_bbox,
     #                         cost_giou=args.dense_set_cost_giou)

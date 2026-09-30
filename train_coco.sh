@@ -17,11 +17,11 @@ mkdir -p "${OUT_DIR}"
   --output_dir "${OUT_DIR}" \
   --vit_backbone swin_nano \
   --pretrained_path ./swin_nano_patch4_window7_224.pth \
-  --batch_size 4 \
+  --batch_size 8 \
   --enc_layers 1 \
   --dec_layers 2 \
-  --lr_backbone 1e-4 \
-  --lr 2e-4 \
+  --lr_backbone 4e-4 \
+  --lr 1e-4 \
   --lr_linear_proj_mult 0.1 \
   --lr_scheduler cosinelr \
   --two_stage \
