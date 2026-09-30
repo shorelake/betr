@@ -31,6 +31,70 @@ def project(flat, shapes, size, binary=False):
     return torch.stack(maps).mean(0).cpu().numpy()
 
 
+def resize_map(field, image):
+    """Nearest-neighbor display preserves binary labels and feature-cell boundaries."""
+    return np.asarray(Image.fromarray(np.asarray(field, dtype=np.float32)).resize(
+        image.size, resample=Image.Resampling.NEAREST))
+
+
+def extra_panels(folder, labels, image, anns):
+    raws = {}
+    for label in labels:
+        with np.load(folder / f'{label}_raw.npz') as data:
+            raws[label] = {k: data[k] for k in data.files}
+    def level0(raw, key):
+        h, w = raw['spatial_shapes'][0]
+        return resize_map(raw[key][:h*w].reshape(h,w), image)
+    def original(ax):
+        ax.imshow(image)
+        for ann in anns:
+            x,y,w,h = ann['bbox']
+            ax.add_patch(plt.Rectangle((x,y),w,h,fill=False,edgecolor='red',linewidth=.8))
+        ax.axis('off')
+    def save(fig, name):
+        fig.tight_layout()
+        for ext in ('png','pdf'): fig.savefig(folder / f'{name}.{ext}',dpi=160)
+        plt.close(fig)
+    keys = ['cross_attention_flat','a2f_target_flat','foreground_score_flat','a2f_prediction_flat']
+    titles = ['Cross attention L0','Binary teacher L0','Early max class score L0','A2F predictor L0']
+    vmax = max(float(level0(r,keys[0]).max()) for r in raws.values()) or 1.
+    fig,axes = plt.subplots(len(labels),5,figsize=(18,3.6*len(labels)),squeeze=False)
+    for row,label in enumerate(labels):
+        original(axes[row,0]); axes[row,0].set_title(label)
+        for col,(key,title) in enumerate(zip(keys,titles),1):
+            ax=axes[row,col]; ax.set_title(title); ax.axis('off')
+            if key in raws[label]:
+                ax.imshow(level0(raws[label],key),cmap='gray',vmin=0,vmax=vmax if col==1 else 1,interpolation='nearest')
+            else: ax.text(.5,.5,'Head absent',ha='center')
+    save(fig,'comparison_level0')
+    for label,raw in raws.items():
+        if 'a2f_prediction_flat' not in raw: continue
+        fig,axes=plt.subplots(1,3,figsize=(12,4))
+        original(axes[0]); axes[0].set_title(label+' / GT')
+        for ax,key,title in zip(axes[1:],keys[1::2],['Binary teacher L0','A2F prediction L0']):
+            ax.imshow(level0(raw,key),cmap='gray',vmin=0,vmax=1,interpolation='nearest'); ax.set_title(title); ax.axis('off')
+        save(fig,label+'_panel_A_level0')
+    # One panel per GT category: compare the same class, not different dedicated heads.
+    for category in sorted({a['category_id'] for a in anns}):
+        fig,axes=plt.subplots(len(labels),4,figsize=(15,3.6*len(labels)),squeeze=False)
+        maps={label:level0(dict(raw, score=raw['class_probability'][:,category]),'score') for label,raw in raws.items()}
+        upper=max(float(a.max()) for a in maps.values()) or 1.
+        for row,label in enumerate(labels):
+            raw=raws[label]; original(axes[row,0]); axes[row,0].set_title(label)
+            for col,limit,title in [(1,1.,'Class probability [0,1]'),(2,upper,'Class probability / shared max')]:
+                axes[row,col].imshow(maps[label],cmap='gray',vmin=0,vmax=limit,interpolation='nearest')
+                axes[row,col].set_title(f'{title}; class {category}'); axes[row,col].axis('off')
+            ax=axes[row,3]; original(ax)
+            boxes=raw['proposal_boxes']; centers=boxes[:,:2]*np.array(image.size)
+            ax.scatter(centers[:,0],centers[:,1],s=6,c='cyan',alpha=.6)
+            # Top 30 boxes for readability; all selected centers remain visible.
+            for cx,cy,w,h in boxes[:30]:
+                ax.add_patch(plt.Rectangle(((cx-w/2)*image.width,(cy-h/2)*image.height),w*image.width,h*image.height,fill=False,edgecolor='cyan',linewidth=.4,alpha=.5))
+            ax.set_xlim(0,image.width); ax.set_ylim(image.height,0)
+            ax.set_title(f'Top-{len(boxes)} centers / top-30 boxes')
+        save(fig,f'panel_B_class{category}_level0')
+
+
 def render(cli):
     if not 0 < cli.ratio <= 1:
         raise ValueError('ratio must be in (0, 1]')
@@ -79,7 +143,12 @@ def render(cli):
                 raw = {'spatial_shapes': shapes.cpu().numpy(),
                        'cross_attention_flat': attention[0].cpu().numpy(),
                        'a2f_target_flat': binary[0].cpu().numpy(),
-                       'foreground_score_flat': foreground[0].cpu().numpy()}
+                       'foreground_score_flat': foreground[0].cpu().numpy(),
+                       'class_probability': enc['pred_logits'][0].sigmoid().cpu().numpy(),
+                       'valid': (~enc['mask_flatten'][0]).cpu().numpy(),
+                       'proposal_indices': enc['topk_proposal'][0].cpu().numpy(),
+                       'proposal_boxes': enc['pred_boxes'][0, enc['topk_proposal'][0]].cpu().numpy()}
+
                 if enc['pred_mask'] is not None:
                     raw['a2f_prediction_flat'] = enc['pred_mask'][0, :, 0].sigmoid().cpu().numpy()
                 np.savez_compressed(folder / f'{label}_raw.npz', **raw)
@@ -91,7 +160,7 @@ def render(cli):
         folder = output / str(image_id)
         boxes = coco.loadAnns(coco.getAnnIds(imgIds=[image_id], iscrowd=False))
         cross_max = max(float(m['cross_attention'].max()) for m in results.values()) or 1.
-        columns = [('cross_attention', 'Decoder cross attention'), ('a2f_target', 'Top-k teacher target'),
+        columns = [('cross_attention', 'Decoder cross attention'), ('a2f_target', 'Teacher: mean across levels (not binary)'),
                    ('foreground_score', 'Early class score'), ('a2f_prediction', 'A2F predictor')]
         fig, axes = plt.subplots(len(labels), 5, figsize=(18, 4*len(labels)), squeeze=False)
         for row, label in enumerate(labels):
@@ -118,13 +187,14 @@ def render(cli):
                 start = 0
                 for level, (h, w) in enumerate(raw['spatial_shapes']):
                     native = raw[key + '_flat'][start:start+h*w].reshape(h, w)
-                    plt.imsave(folder / f'{label}_{key}_level{level}.png', native,
+                    plt.imsave(folder / f'{label}_{key}_level{level}.png', resize_map(native, original),
                                cmap='gray', vmin=0, vmax=vmax)
                     start += h*w
         fig.tight_layout()
         fig.savefig(folder / 'comparison.png', dpi=180)
         fig.savefig(folder / 'comparison.pdf')
         plt.close(fig)
+        extra_panels(folder, labels, original, boxes)
         # Figure 3.6 uses a binary teacher map above its predicted response.
         for label in labels:
             maps = results[label]
@@ -145,7 +215,7 @@ def render(cli):
                 with np.load(folder / f'{label}_raw.npz') as raw:
                     h, w = raw['spatial_shapes'][0]
                     field = raw[key + '_flat'][:h*w].reshape(h, w)
-                ax.imshow(field, cmap='gray', vmin=0, vmax=1)
+                ax.imshow(resize_map(field, original), cmap='gray', vmin=0, vmax=1, interpolation='nearest')
                 ax.set_title('Binary cross attention' if row == 0 else 'Early A2F prediction')
                 ax.axis('off')
             fig.tight_layout()

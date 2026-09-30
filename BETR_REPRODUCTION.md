@@ -345,3 +345,13 @@ python -m torch.distributed.run --nproc_per_node=2 -m tools.train_betr_ablation 
 注意 `a2f` 是 0 encoder，而 `full` 是 1 encoder，KD 一致不代表结构一致。
 注意力/梯度分析工具通过 checkpoint 的 dense_aux_loss 自动选择对应 matcher；对旧 checkpoint 仍采用旧分配。
 此模式是依据官方实现补充的实验，不保证复现论文 32.2 AP。
+
+
+### 原图尺寸的注意力对比面板
+
+`tools.visualize_betr_attention` 原命令无需增加参数。各 `*_levelN.png` 现在用最近邻放大至原图尺寸，二值目标保持 0/1；原生数值保存在 `*_raw.npz`。
+`comparison.png/pdf` 保留多尺度平均视图，其 teacher 是平均投影，不是二值图。
+`comparison_level0.png/pdf` 比较各模型最细层，教师是该层实际二值目标；该层正样本比例不保证为 20%，20% 定义在全部有效多尺度 token 上。
+`<模型>_panel_A_level0.png/pdf` 为原图、二值教师、A2F 预测，仅有 A2F 头的模型生成。
+`panel_B_class<类别ID>_level0.png/pdf` 按 GT 类别生成共有类别响应对照：原图、原始概率 [0,1]、同图同类跨模型共享最大值显示、全部入选 proposal 中心与前 30 个框。
+面板 B 分类响应不乘 filter；proposal 使用实际排名。归一化只用于显示，不能跨图片比较归一化亮度。这些图不单独证明梯度冲突或重复 proposal 导致 AP 下降。

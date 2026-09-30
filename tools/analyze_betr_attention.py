@@ -234,9 +234,15 @@ def main():
                 a=bits if key=='binary' else cache.get(key)
                 if a is None: ax.text(.5,.5,'Head absent',ha='center')
                 else:
-                    ax.imshow(a,cmap='gray',vmin=0,vmax=vmax if key=='query_attention' else 1)
+                    # Render boolean and continuous maps on the same explicit pixel grid.
+                    a=np.asarray(a,dtype=np.float32)
+                    ax.imshow(a,cmap='gray',vmin=0,vmax=vmax if key=='query_attention' else 1,
+                              interpolation='nearest',origin='upper')
                     for region,color in zip(regions,['cyan','orange']):
                         if region.any() and not region.all(): ax.contour(region,levels=[.5],colors=[color],linewidths=.5)
+                    ax.set_xlim(-.5,grid_extent[0]-.5)
+                    ax.set_ylim(grid_extent[1]-.5,-.5)
+                    ax.set_aspect('equal')
             for ax in axes[row]: ax.axis('off')
         fig.tight_layout(); fig.savefig(out/f'{iid}_{aid}_comparison.png',dpi=150); fig.savefig(out/f'{iid}_{aid}_comparison.pdf')
         # Second view: common GT crop with 25% context, without renormalizing colors.
