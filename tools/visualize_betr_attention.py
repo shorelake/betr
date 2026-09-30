@@ -42,9 +42,14 @@ def extra_panels(folder, labels, image, anns):
     for label in labels:
         with np.load(folder / f'{label}_raw.npz') as data:
             raws[label] = {k: data[k] for k in data.files}
+    def level_map(raw, key, level):
+        shapes = raw['spatial_shapes']
+        h, w = shapes[level]
+        start = int(np.prod(shapes[:level], axis=1).sum())
+        return resize_map(raw[key][start:start+h*w].reshape(h,w), image)
+
     def level0(raw, key):
-        h, w = raw['spatial_shapes'][0]
-        return resize_map(raw[key][:h*w].reshape(h,w), image)
+        return level_map(raw, key, 0)
     def original(ax):
         ax.imshow(image)
         for ann in anns:
@@ -56,17 +61,22 @@ def extra_panels(folder, labels, image, anns):
         for ext in ('png','pdf'): fig.savefig(folder / f'{name}.{ext}',dpi=160)
         plt.close(fig)
     keys = ['cross_attention_flat','a2f_target_flat','foreground_score_flat','a2f_prediction_flat']
-    titles = ['Cross attention L0','Binary teacher L0','Early max class score L0','A2F predictor L0']
-    vmax = max(float(level0(r,keys[0]).max()) for r in raws.values()) or 1.
-    fig,axes = plt.subplots(len(labels),5,figsize=(18,3.6*len(labels)),squeeze=False)
-    for row,label in enumerate(labels):
-        original(axes[row,0]); axes[row,0].set_title(label)
-        for col,(key,title) in enumerate(zip(keys,titles),1):
-            ax=axes[row,col]; ax.set_title(title); ax.axis('off')
-            if key in raws[label]:
-                ax.imshow(level0(raws[label],key),cmap='gray',vmin=0,vmax=vmax if col==1 else 1,interpolation='nearest')
-            else: ax.text(.5,.5,'Head absent',ha='center')
-    save(fig,'comparison_level0')
+    titles = ['Cross attention','Binary teacher','Early max class score','A2F predictor']
+    num_levels = len(raws[labels[0]]['spatial_shapes'])
+    if any(len(raw['spatial_shapes']) != num_levels for raw in raws.values()):
+        raise ValueError('Compared models must have the same number of feature levels')
+    for level in range(num_levels):
+        vmax = max(float(level_map(r,keys[0],level).max()) for r in raws.values()) or 1.
+        fig,axes = plt.subplots(len(labels),5,figsize=(18,3.6*len(labels)),squeeze=False)
+        for row,label in enumerate(labels):
+            original(axes[row,0]); axes[row,0].set_title(label)
+            for col,(key,title) in enumerate(zip(keys,titles),1):
+                ax=axes[row,col]; ax.set_title(f'{title} L{level}'); ax.axis('off')
+                if key in raws[label]:
+                    ax.imshow(level_map(raws[label],key,level),cmap='gray',vmin=0,
+                              vmax=vmax if col==1 else 1,interpolation='nearest')
+                else: ax.text(.5,.5,'Head absent',ha='center')
+        save(fig,f'comparison_level{level}')
     for label,raw in raws.items():
         if 'a2f_prediction_flat' not in raw: continue
         fig,axes=plt.subplots(1,3,figsize=(12,4))
